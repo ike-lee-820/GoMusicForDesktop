@@ -37,7 +37,7 @@ compose.desktop {
         nativeDistributions {
             packageName = "GoMusic"
             packageVersion = "1.0.0"
-            description = "GoMusic 桌面版"
+            description = "GoMusic Desktop"
             vendor = "GoMusic"
             copyright = "GoMusic"
             macOS { bundleID = "net.de5.gomusic" }
