@@ -2,12 +2,8 @@ package gomusic
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.toComposeImageBitmap
 import org.jetbrains.skia.Image
 import org.jetbrains.skiko.toComposeImageBitmap
-import java.awt.Graphics2D
-import java.awt.RenderingHints
-import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -15,7 +11,7 @@ import javax.imageio.ImageIO
 
 data class CoverImg(val bmp: ImageBitmap, val color: Color?)
 
-/** 封面加载：Skia 解码（自带 webp/jpeg/png），并抽取主色 */
+/** 封面加载：Skia 解码（webp / jpeg / png 通吃），ImageIO（含 webp 插件）负责取色 */
 object Images {
     private val cache = ConcurrentHashMap<String, CoverImg?>()
 
@@ -31,36 +27,18 @@ object Images {
         val key = "$ref@$size"
         cache[key]?.let { return it }
         val bytes = readBytes(ref) ?: return null
-        val img = decode(bytes, size) ?: skia(bytes)
+        val img = CoverImg(
+            bmp = runCatching { Image.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull() ?: return null,
+            color = runCatching { dominant(bytes) }.getOrNull(),
+        )
         if (cache.size > 120) cache.clear()
         cache[key] = img
         return img
     }
 
-    /** ImageIO（含 TwelveMonkeys 的 webp 插件）：能顺带缩放到目标尺寸并取色 */
-    private fun decode(bytes: ByteArray, size: Int): CoverImg? {
-        val src = runCatching { ImageIO.read(ByteArrayInputStream(bytes)) }.getOrNull() ?: return null
-        val w = src.width
-        val h = src.height
-        if (w <= 0 || h <= 0) return null
-        val scale = (size.toDouble() / maxOf(w, h)).coerceAtMost(1.0)
-        val tw = (w * scale).toInt().coerceAtLeast(1)
-        val th = (h * scale).toInt().coerceAtLeast(1)
-        val small = BufferedImage(tw, th, BufferedImage.TYPE_INT_ARGB)
-        val g: Graphics2D = small.createGraphics()
-        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
-        g.drawImage(src, 0, 0, tw, th, null)
-        g.dispose()
-        return CoverImg(small.toComposeImageBitmap(), dominant(small))
-    }
-
-    /** 兜底：Skia 直接解码（webp / jpeg / png 都支持），但不取色 */
-    private fun skia(bytes: ByteArray): CoverImg? = runCatching {
-        CoverImg(Image.makeFromEncoded(bytes).toComposeImageBitmap(), null)
-    }.getOrNull()
-
     /** 取封面主色：偏好饱和、亮度适中的像素，并保证在深色底上可读 */
-    fun dominant(bi: BufferedImage): Color? {
+    private fun dominant(bytes: ByteArray): Color? {
+        val bi = runCatching { ImageIO.read(ByteArrayInputStream(bytes)) }.getOrNull() ?: return null
         val w = bi.width
         val h = bi.height
         if (w == 0 || h == 0) return null
@@ -68,8 +46,9 @@ object Images {
         var sg = 0.0
         var sb = 0.0
         var n = 0
-        for (y in 0 until h) {
-            for (x in 0 until w) {
+        val step = 2 // 隔点采样，够用且快
+        for (y in 0 until h step step) {
+            for (x in 0 until w step step) {
                 val argb = bi.getRGB(x, y)
                 val a = (argb ushr 24) and 0xFF
                 if (a < 125) continue
@@ -93,7 +72,6 @@ object Images {
         var r = sr / n
         var g = sg / n
         var b = sb / n
-        // 提升亮度：太暗在深色背景上看不清
         var lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
         if (lum < 0.55) {
             val k = 0.55 / lum.coerceAtLeast(0.05)
@@ -108,6 +86,10 @@ object Images {
                 b *= k2
             }
         }
-        return Color((r / 255f).coerceIn(0f, 1f), (g / 255f).coerceIn(0f, 1f), (b / 255f).coerceIn(0f, 1f))
+        return Color(
+            red = (r / 255.0).toFloat(),
+            green = (g / 255.0).toFloat(),
+            blue = (b / 255.0).toFloat(),
+        )
     }
 }

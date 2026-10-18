@@ -62,11 +62,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.onPointerEvent
 import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.awaitPointerEventScope
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
 @Composable
@@ -820,14 +820,6 @@ fun NameDialog(title: String, initial: String, onClose: () -> Unit, onOk: (Strin
 }
 
 /** 桌面端鼠标悬停高亮 */
-fun Modifier.pointerHover(onHover: (Boolean) -> Unit): Modifier = pointerInput(Unit) {
-    awaitPointerEventScope {
-        while (true) {
-            val e = awaitPointerEvent()
-            when (e.type) {
-                PointerEventType.Enter -> onHover(true)
-                PointerEventType.Exit -> onHover(false)
-            }
-        }
-    }
-}
+fun Modifier.pointerHover(onHover: (Boolean) -> Unit): Modifier =
+    this.onPointerEvent(PointerEventType.Enter) { onHover(true) }
+        .onPointerEvent(PointerEventType.Exit) { onHover(false) }
