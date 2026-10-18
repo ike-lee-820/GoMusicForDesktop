@@ -43,6 +43,14 @@ jobs:
         run: |
           gradle createDistributable --no-daemon --stacktrace 2>&1 | tee build.log
           exit ${PIPESTATUS[0]}
+      - name: Dump jpackage logs
+        if: always()
+        shell: bash
+        run: |
+          find build/compose/logs -type f 2>/dev/null | while read f; do
+            echo "=== $f" >> build.log
+            cat "$f" >> build.log
+          done
       - name: Publish log
         if: always()
         run: |
