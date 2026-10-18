@@ -29,6 +29,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -226,6 +238,43 @@ fun SeekBar(position: Long, duration: Long, onSeek: (Long) -> Unit) {
             Txt(fmt(if (drag != null) (frac * duration).toLong() else position), 12, color = MutedColor)
             Txt(if (duration > 0) fmt(duration) else "--:--", 12, color = MutedColor)
         }
+    }
+}
+
+/** 自带进度条，避免依赖 material3 不同版本的 API 差异 */
+@Composable
+fun Bar(progress: Float?, modifier: Modifier = Modifier, color: Color) {
+    val track = RoundedCornerShape(2.dp)
+    Box(modifier.height(4.dp).clip(track).background(SurfaceHiColor)) {
+        if (progress == null) {
+            // 不确定进度：一段来回移动的色块
+            val t = rememberInfiniteTransition(label = "ind")
+            val f by t.animateFloat(
+                0f, 1f,
+                infiniteRepeatable(tween(1200, easing = LinearEasing), RepeatMode.Reverse),
+                label = "f",
+            )
+            Box(Modifier.fillMaxWidth(0.35f).offset { IntOffset((f * 300).roundToInt(), 0) }
+                .fillMaxSize().clip(track).background(color))
+        } else {
+            Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).fillMaxSize().clip(track).background(color))
+        }
+    }
+}
+
+/** 加载指示：一圈旋转的弧 */
+@Composable
+fun Spinner(modifier: Modifier = Modifier, color: Color, size: Dp = 28.dp) {
+    val t = rememberInfiniteTransition(label = "spin")
+    val a by t.animateFloat(0f, 360f, infiniteRepeatable(tween(900, easing = LinearEasing)), label = "a")
+    Canvas(modifier.size(size)) {
+        drawArc(
+            color = color,
+            startAngle = a,
+            sweepAngle = 300f,
+            useCenter = false,
+            style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round),
+        )
     }
 }
 

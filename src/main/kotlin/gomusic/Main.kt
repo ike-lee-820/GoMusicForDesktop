@@ -21,21 +21,25 @@ fun main() = application {
         state = rememberWindowState(size = DpSize(1180.dp, 760.dp)),
         onCloseRequest = ::exitApplication,
         onKeyEvent = { e ->
-            if (e.type != KeyEventType.KeyDown) return@Window false
-            when (e.key) {
-                Key.Spacebar -> {
-                    state.toggle()
-                    true
+            if (e.type == KeyEventType.KeyDown) {
+                when (e.key) {
+                    Key.Spacebar -> {
+                        state.toggle()
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        val max = if (state.durationMs > 0) state.durationMs else state.positionMs + 5000
+                        state.seek((state.positionMs + 5000).coerceAtMost(max))
+                        true
+                    }
+                    Key.DirectionLeft -> {
+                        state.seek((state.positionMs - 5000).coerceAtLeast(0))
+                        true
+                    }
+                    else -> false
                 }
-                Key.DirectionRight -> {
-                    state.seek((state.positionMs + 5000).coerceAtMost(if (state.durationMs > 0) state.durationMs else Long.MAX_VALUE))
-                    true
-                }
-                Key.DirectionLeft -> {
-                    state.seek((state.positionMs - 5000).coerceAtLeast(0))
-                    true
-                }
-                else -> false
+            } else {
+                false
             }
         },
     ) {

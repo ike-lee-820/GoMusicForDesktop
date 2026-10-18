@@ -51,8 +51,6 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shuffle
 import androidx.compose.material.icons.outlined.SkipNext
 import androidx.compose.material.icons.outlined.SkipPrevious
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -157,20 +155,11 @@ fun DownloadBar(d: DlStatus) {
         }
         Spacer(Modifier.height(6.dp))
         if (d.percent >= 0) {
-            LinearProgressIndicator(
-                progress = d.percent / 100f,
-                modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = SurfaceHiColor,
-            )
+            Bar(d.percent / 100f, Modifier.fillMaxWidth(), MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(4.dp))
             Txt("${sizeText(d.done)} / ${sizeText(d.size)} · ${d.percent}%", 12, color = MutedColor)
         } else {
-            LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = SurfaceHiColor,
-            )
+            Bar(null, Modifier.fillMaxWidth(), MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(4.dp))
             Txt("${sizeText(d.done)} 已下载", 12, color = MutedColor)
         }
@@ -183,7 +172,7 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
     when {
         state.loading && state.songs.isEmpty() ->
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                Spinner(color = MaterialTheme.colorScheme.primary)
             }
         state.error != null && state.songs.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
