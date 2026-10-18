@@ -1,0 +1,241 @@
+package gomusic
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+val BgColor = Color(0xFF121014)
+val SurfaceColor = Color(0xFF1C1A20)
+val SurfaceHiColor = Color(0xFF2A2730)
+val OnColor = Color(0xFFECE6F0)
+val MutedColor = Color(0xFFA8A2B0)
+
+@Composable
+fun GoTheme(primary: Color, content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = darkColorScheme(
+            primary = primary,
+            background = BgColor,
+            surface = SurfaceColor,
+            surfaceVariant = SurfaceHiColor,
+            onSurface = OnColor,
+            onBackground = OnColor,
+            onPrimary = Color(0xFF1A1423),
+        ),
+        content = content,
+    )
+}
+
+@Composable
+fun Txt(
+    text: String,
+    size: Int,
+    modifier: Modifier = Modifier,
+    weight: FontWeight = FontWeight.Normal,
+    color: Color = MaterialTheme.colorScheme.onSurface,
+    maxLines: Int = Int.MAX_VALUE,
+    align: TextAlign? = null,
+) {
+    androidx.compose.material3.Text(
+        text,
+        modifier,
+        color = color,
+        fontSize = size.sp,
+        fontWeight = weight,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = align,
+    )
+}
+
+fun Modifier.hoverable(): Modifier = this
+
+@Composable
+fun IconBtn(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    desc: String,
+    size: Dp = 36.dp,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier.size(size).clip(CircleShape)
+            .clickable(enabled = enabled) { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, desc, tint = if (enabled) tint else tint.copy(alpha = 0.4f), modifier = Modifier.size(20.dp))
+    }
+}
+
+@Composable
+fun GoButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    primary: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    val bg = if (primary) cs.primary else cs.surfaceVariant
+    val fg = if (primary) cs.onPrimary else cs.onSurface
+    Box(
+        modifier.height(36.dp).clip(RoundedCornerShape(18.dp))
+            .background(if (enabled) bg else bg.copy(alpha = 0.4f))
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) { Txt(text, 13, weight = FontWeight.SemiBold, color = fg) }
+}
+
+/** 封面：异步加载 + 缓存，按显示尺寸解码 */
+@Composable
+fun Cover(
+    ref: String?,
+    modifier: Modifier,
+    size: Int = 128,
+    radius: Dp = 8.dp,
+    circle: Boolean = false,
+) {
+    val src = coverRef(ref)
+    var bmp by remember(src, size) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(src, size) {
+        if (src.isNullOrBlank()) {
+            bmp = null
+            return@LaunchedEffect
+        }
+        bmp = withContext(Dispatchers.IO) { Images.get(src, size)?.bmp }
+    }
+    val shape = if (circle) CircleShape else RoundedCornerShape(radius)
+    Box(
+        modifier.clip(shape).background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bmp != null) {
+            Image(bmp!!, null, Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+        } else {
+            Icon(Icons.Outlined.MusicNote, null, tint = MutedColor.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+@Composable
+fun SearchField(value: String, onValue: (String) -> Unit, hint: String) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(12.dp))
+            .background(cs.surface).padding(horizontal = 12.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        if (value.isEmpty()) Txt(hint, 14, color = MutedColor)
+        BasicTextField(
+            value = value,
+            onValueChange = onValue,
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(color = cs.onSurface, fontSize = 14.sp),
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** 进度条：点击定位，拖动显示气泡 */
+@Composable
+fun SeekBar(position: Long, duration: Long, onSeek: (Long) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    var drag by remember { mutableStateOf<Float?>(null) }
+    val frac = drag ?: if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+    Column {
+        Box(
+            Modifier.fillMaxWidth().height(20.dp)
+                .pointerInput(duration) {
+                    val w = size.width.coerceAtLeast(1)
+                    detectTapGestures { o ->
+                        if (duration > 0) onSeek((o.x / w * duration).toLong().coerceIn(0, duration))
+                    }
+                }
+                .pointerInput(duration) {
+                    val w = size.width.coerceAtLeast(1)
+                    detectDragGestures(
+                        onDragStart = { o -> drag = (o.x / w).coerceIn(0f, 1f) },
+                        onDragEnd = { drag = null },
+                        onDragCancel = { drag = null },
+                    ) { change, _ ->
+                        change.consume()
+                        drag = (change.position.x / w).coerceIn(0f, 1f)
+                    }
+                },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.Center) {
+                val track = RoundedCornerShape(2.dp)
+                Box(Modifier.fillMaxWidth().height(4.dp).clip(track).background(Color.White.copy(alpha = 0.2f)))
+            }
+            Row(Modifier.fillMaxWidth().height(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (frac > 0.01f) Spacer(Modifier.weight(frac))
+                Box(Modifier.size(12.dp).background(cs.primary, CircleShape))
+                if (frac < 0.99f) Spacer(Modifier.weight((1f - frac).coerceAtLeast(0.001f)))
+            }
+            // 已播放部分（画在轨道之上）
+            Box(
+                Modifier.fillMaxWidth(frac).height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)).background(cs.primary)
+            )
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Txt(fmt(if (drag != null) (frac * duration).toLong() else position), 12, color = MutedColor)
+            Txt(if (duration > 0) fmt(duration) else "--:--", 12, color = MutedColor)
+        }
+    }
+}
+
+@Composable
+fun ToastHost(msg: String?) {
+    if (msg == null) return
+    Box(Modifier.fillMaxSize().padding(bottom = 32.dp), contentAlignment = Alignment.BottomCenter) {
+        Box(
+            Modifier.clip(RoundedCornerShape(12.dp))
+                .background(SurfaceHiColor).padding(horizontal = 16.dp, vertical = 10.dp),
+        ) { Txt(msg, 14) }
+    }
+}

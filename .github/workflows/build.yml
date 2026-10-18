@@ -1,0 +1,77 @@
+name: Build Desktop
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: linux-x64
+          - os: ubuntu-24.04-arm
+            arch: linux-arm64
+          - os: windows-latest
+            arch: windows-x64
+          - os: macos-13
+            arch: macos-x64
+          - os: macos-14
+            arch: macos-arm64
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: Build app image
+        run: gradle createDistributable --no-daemon
+
+      - name: Zip (unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd build/compose/binaries/main-release/app
+          zip -r ../../../../GoMusic-${{ matrix.arch }}.zip .
+      - name: Zip (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build/compose/binaries/main-release/app/* -DestinationPath GoMusic-${{ matrix.arch }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GoMusic-${{ matrix.arch }}
+          path: GoMusic-${{ matrix.arch }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="v1.0.0"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "GoMusic 桌面版 $TAG" --notes "自动构建：Windows / Linux / macOS（x64 与 ARM64）"
+          fi
+          for f in out/*.zip; do
+            gh release upload "$TAG" "$f" --clobber
+          done
