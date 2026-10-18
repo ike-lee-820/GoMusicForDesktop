@@ -62,8 +62,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.foundation.onPointerEvent
-import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -223,7 +221,7 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
 fun SongList(state: AppState, list: List<Song>, onPick: (List<String>, String) -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
         items(list, key = { it.ssid }) { s ->
-            var hover by remember { mutableStateOf(false) }
+            val (hover, hoverM) = hoverState()
             val cur = s.ssid == state.curSsid
             val bg = when {
                 cur -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
@@ -232,7 +230,7 @@ fun SongList(state: AppState, list: List<Song>, onPick: (List<String>, String) -
             }
             Row(
                 Modifier.fillMaxWidth().height(64.dp).background(bg)
-                    .pointerHover { hover = it }
+                    .then(hoverM)
                     .clickable { state.playSongs(list, list.indexOf(s)) }
                     .padding(start = 16.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -280,11 +278,11 @@ fun GroupRow(
     onClick: () -> Unit,
     onAdd: (() -> Unit)? = null,
 ) {
-    var hover by remember { mutableStateOf(false) }
+    val (hover, hoverM) = hoverState()
     Row(
         Modifier.fillMaxWidth().height(64.dp)
             .background(if (hover) SurfaceHiColor else Color.Transparent)
-            .pointerHover { hover = it }
+            .then(hoverM)
             .clickable(onClick = onClick)
             .padding(start = 16.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -307,8 +305,8 @@ fun GroupCard(
     onClick: () -> Unit,
     onAdd: (() -> Unit)? = null,
 ) {
-    var hover by remember { mutableStateOf(false) }
-    Column(Modifier.clip(RoundedCornerShape(16.dp)).background(if (hover) SurfaceHiColor else SurfaceColor).clickable(onClick = onClick).padding(8.dp).pointerHover { hover = it }) {
+    val (hover, hoverM) = hoverState()
+    Column(Modifier.clip(RoundedCornerShape(16.dp)).background(if (hover) SurfaceHiColor else SurfaceColor).clickable(onClick = onClick).padding(8.dp).then(hoverM)) {
         Box(Modifier.fillMaxWidth()) {
             Cover(cover, Modifier.fillMaxWidth().aspectRatio(1f), 256, 16.dp)
             if (onAdd != null) {
@@ -354,12 +352,12 @@ fun AlbumPage(state: AppState, p: Page.Album, onPick: (List<String>, String) -> 
             Spacer(Modifier.height(8.dp))
         }
         items(songs, key = { it.ssid }) { s ->
-            var hover by remember { mutableStateOf(false) }
+            val (hover, hoverM) = hoverState()
             val cur = s.ssid == state.curSsid
             Row(
                 Modifier.fillMaxWidth().height(64.dp)
                     .background(if (cur) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f) else if (hover) SurfaceHiColor else Color.Transparent)
-                    .pointerHover { hover = it }
+                    .then(hoverM)
                     .clickable { state.playSongs(songs, songs.indexOf(s)) }
                     .padding(start = 16.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -433,12 +431,12 @@ fun ArtistPage(state: AppState, p: Page.Artist, onPick: (List<String>, String) -
             }
         } else {
             items(songs, key = { it.ssid }) { s ->
-                var hover by remember { mutableStateOf(false) }
+                val (hover, hoverM) = hoverState()
                 val cur = s.ssid == state.curSsid
                 Row(
                     Modifier.fillMaxWidth().height(64.dp)
                         .background(if (cur) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f) else if (hover) SurfaceHiColor else Color.Transparent)
-                        .pointerHover { hover = it }
+                        .then(hoverM)
                         .clickable { state.playSongs(songs, songs.indexOf(s)) }
                         .padding(start = 16.dp, end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -482,10 +480,10 @@ fun PlaylistPage(state: AppState, p: Page.PlaylistPage, onPick: (List<String>, S
         Box(Modifier.weight(1f)) {
             LazyColumn(Modifier.fillMaxSize()) {
                 itemsIndexed(songs, key = { _, s -> s.ssid }) { i, s ->
-                    var hover by remember { mutableStateOf(false) }
+                    val (hover, hoverM) = hoverState()
                     Row(
                         Modifier.fillMaxWidth().height(64.dp).background(if (hover) SurfaceHiColor else Color.Transparent)
-                            .pointerHover { hover = it }
+                            .then(hoverM)
                             .clickable { state.playSongs(songs, i) }
                             .padding(start = 16.dp, end = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -622,11 +620,11 @@ fun QueueView(state: AppState) {
     LazyColumn(Modifier.fillMaxSize()) {
         itemsIndexed(state.queue, key = { _, s -> s.ssid }) { i, s ->
             val cur = i == state.curIndex
-            var hover by remember { mutableStateOf(false) }
+            val (hover, hoverM) = hoverState()
             Row(
                 Modifier.fillMaxWidth().height(56.dp)
                     .background(if (cur) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f) else if (hover) SurfaceHiColor else Color.Transparent)
-                    .pointerHover { hover = it }
+                    .then(hoverM)
                     .clickable { state.playSongs(state.queue, i) }
                     .padding(start = 12.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -818,8 +816,3 @@ fun NameDialog(title: String, initial: String, onClose: () -> Unit, onOk: (Strin
         }
     }
 }
-
-/** 桌面端鼠标悬停高亮 */
-fun Modifier.pointerHover(onHover: (Boolean) -> Unit): Modifier =
-    this.onPointerEvent(PointerEventType.Enter) { onHover(true) }
-        .onPointerEvent(PointerEventType.Exit) { onHover(false) }

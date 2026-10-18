@@ -149,8 +149,8 @@ class Mp3Player {
                 } catch (e: Exception) {
                     break
                 }
-                val buf: SampleBuffer = try {
-                    dec.decodeFrame(h, bs)
+                val buf = try {
+                    dec.decodeFrame(h, bs) as SampleBuffer
                 } catch (e: Exception) {
                     bs.closeFrame()
                     continue
@@ -232,7 +232,7 @@ class Mp3Player {
             val bs = Bitstream(s)
             val dec = Decoder()
             val h = bs.readFrame() ?: return null
-            val buf = dec.decodeFrame(h, bs)
+            val buf = dec.decodeFrame(h, bs) as SampleBuffer
             bs.closeFrame()
             val r = bpsOf(s, h, buf)
             runCatching { s.close() }
@@ -247,7 +247,7 @@ class Mp3Player {
         val bs = Bitstream(s)
         val dec = Decoder()
         val h = bs.readFrame() ?: return null
-        val buf = dec.decodeFrame(h, bs)
+        val buf = dec.decodeFrame(h, bs) as SampleBuffer
         bs.closeFrame()
         val r = bpsOf(s, h, buf)
         runCatching { s.close() }

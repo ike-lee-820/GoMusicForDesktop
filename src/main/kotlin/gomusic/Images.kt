@@ -2,8 +2,7 @@ package gomusic
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import org.jetbrains.skia.Image
-import org.jetbrains.skiko.toComposeImageBitmap
+import org.jetbrains.compose.resources.decodeToImageBitmap
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -28,7 +27,7 @@ object Images {
         cache[key]?.let { return it }
         val bytes = readBytes(ref) ?: return null
         val img = CoverImg(
-            bmp = runCatching { Image.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull() ?: return null,
+            bmp = runCatching { bytes.decodeToImageBitmap() }.getOrNull() ?: return null,
             color = runCatching { dominant(bytes) }.getOrNull(),
         )
         if (cache.size > 120) cache.clear()

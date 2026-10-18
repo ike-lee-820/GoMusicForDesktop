@@ -4,6 +4,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,8 +44,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.unit.IntOffset
-import kotlin.math.roundToInt
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -100,8 +103,6 @@ fun Txt(
         textAlign = align,
     )
 }
-
-fun Modifier.hoverable(): Modifier = this
 
 @Composable
 fun IconBtn(
@@ -241,23 +242,30 @@ fun SeekBar(position: Long, duration: Long, onSeek: (Long) -> Unit) {
     }
 }
 
+/** 鼠标悬停状态 + 对应 Modifier（桌面端列表行高亮用） */
+@Composable
+fun hoverState(): Pair<Boolean, Modifier> {
+    val src = remember { MutableInteractionSource() }
+    val hovered by src.collectIsHoveredAsState()
+    return hovered to Modifier.hoverable(src)
+}
+
 /** 自带进度条，避免依赖 material3 不同版本的 API 差异 */
 @Composable
 fun Bar(progress: Float?, modifier: Modifier = Modifier, color: Color) {
     val track = RoundedCornerShape(2.dp)
-    Box(modifier.height(4.dp).clip(track).background(SurfaceHiColor)) {
-        if (progress == null) {
-            // 不确定进度：一段来回移动的色块
-            val t = rememberInfiniteTransition(label = "ind")
-            val f by t.animateFloat(
-                0f, 1f,
-                infiniteRepeatable(tween(1200, easing = LinearEasing), RepeatMode.Reverse),
-                label = "f",
-            )
-            Box(Modifier.fillMaxWidth(0.35f).offset { IntOffset((f * 300).roundToInt(), 0) }
-                .fillMaxSize().clip(track).background(color))
-        } else {
-            Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).fillMaxSize().clip(track).background(color))
+    if (progress == null) {
+        // 不确定进度：整条呼吸
+        val t = rememberInfiniteTransition(label = "ind")
+        val f by t.animateFloat(
+            0f, 1f,
+            infiniteRepeatable(tween(1200, easing = LinearEasing), RepeatMode.Reverse),
+            label = "f",
+        )
+        Box(modifier.height(4.dp).clip(track).background(color.copy(alpha = 0.3f + f * 0.7f)))
+    } else {
+        Box(modifier.height(4.dp).clip(track).background(SurfaceHiColor)) {
+            Box(Modifier.fillMaxHeight().fillMaxWidth(progress.coerceIn(0f, 1f)).clip(track).background(color))
         }
     }
 }
