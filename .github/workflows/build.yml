@@ -35,7 +35,27 @@ jobs:
           gradle-version: 8.10.2
 
       - name: Build app image
-        run: gradle createDistributable --no-daemon
+        id: b
+        continue-on-error: true
+        run: |
+          gradle createDistributable --no-daemon --stacktrace 2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+      - name: Publish log
+        if: always()
+        run: |
+          git config user.name ci-bot
+          git config user.email ci-bot@example.com
+          git checkout -B ci-logs-${{ matrix.arch }}
+          mkdir -p ci
+          cp build.log ci/build.log || true
+          git add -f ci/build.log
+          git commit -m "ci log ${{ matrix.arch }} $(date -u +%FT%TZ)" || echo none
+          git push -f origin ci-logs-${{ matrix.arch }}
+      - name: Fail if build failed
+        if: steps.b.outcome == 'failure'
+        run: |
+          grep -E "^e:|FAILURE|error:" build.log | head -40
+          exit 1
 
       - name: Zip (unix)
         if: matrix.os != 'windows-latest'
