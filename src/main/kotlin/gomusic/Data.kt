@@ -160,21 +160,8 @@ object Api {
         return d.audio[key]!!.first()
     }
 
-    /**
-     * 桌面版只内置 MP3 解码，所以优先挑 mp3 地址；
-     * 无损（flac）等格式在无 mp3 时才回退（届时会播放失败并提示）。
-     */
-    fun audioUrlMp3(ssid: String, quality: String): String {
-        val d = detail(ssid)
-        if (d.audio.isEmpty()) throw IOException("没有可用音频")
-        val mp3 = d.audio.filterKeys { _ -> true }
-            .mapValues { it.value.firstOrNull { u -> u.contains(".mp3", true) } }
-            .filterValues { it != null }
-            .mapValues { it.value!! }
-        val src = if (mp3.isEmpty()) d.audio.mapValues { it.value.first() } else mp3
-        val key = src.keys.minByOrNull { kotlin.math.abs(rank(it) - rank(quality)) }!!
-        return src[key]!!
-    }
+    /** 桌面版用 VLC 播放，各音质都能播，直接挑最接近目标音质的地址 */
+    fun audioUrlFor(ssid: String, quality: String): String = audioUrl(ssid, quality)
 
     /** 下载到输出流；[onProgress] 回调 (已读字节, 总字节，-1 未知) */
     fun fetch(url: String, out: OutputStream, onProgress: ((Long, Long) -> Unit)? = null) {

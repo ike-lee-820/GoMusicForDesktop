@@ -690,6 +690,10 @@ fun SettingsDialog(state: AppState) {
             Spacer(Modifier.height(8.dp))
             GoButton("重新连接") { state.load() }
             Spacer(Modifier.height(16.dp))
+            Txt("播放内核", 15, weight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Txt("当前：${state.engineName}（优先 VLC；未安装 VLC 时回退内置 MP3 解码）", 13, color = MutedColor)
+            Spacer(Modifier.height(16.dp))
             Txt("主题色", 15, weight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             Row {

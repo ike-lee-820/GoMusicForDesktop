@@ -56,7 +56,11 @@ fun speedText(bps: Long): String = if (bps <= 0) "" else "${sizeText(bps)}/s"
 
 class AppState {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val player = Mp3Player()
+    private val player = MusicPlayer()
+    /** 当前播放内核名（VLC / 内置 MP3 解码） */
+    var engineName: String = ""
+        get() = player.engineName
+        private set
 
     // ---------- 数据 ----------
     var songs by mutableStateOf<List<Song>>(emptyList()); private set
@@ -117,11 +121,20 @@ class AppState {
     private var artistInput: List<Song>? = null
 
     init {
-        player.onPosition = { positionMs = it }
-        player.onDuration = { durationMs = it }
         player.onEnded = { onEnded() }
         player.onError = { msg -> toast("播放失败：$msg"); isPlaying = false }
         load()
+        // 播放内核没有进度回调，界面上定时读一次
+        scope.launch {
+            while (true) {
+                delay(250)
+                if (isPlaying) {
+                    positionMs = player.position()
+                    val d = player.duration()
+                    if (d > 0) durationMs = d
+                }
+            }
+        }
     }
 
     // ================= 加载 =================
@@ -234,7 +247,7 @@ class AppState {
                     null
                 } else {
                     try {
-                        withContext(Dispatchers.IO) { Api.audioUrlMp3(song.ssid, quality) } to false
+                        withContext(Dispatchers.IO) { Api.audioUrl(song.ssid, quality) } to false
                     } catch (e: Exception) {
                         toast("获取播放地址失败：${e.message}")
                         isPlaying = false
@@ -340,7 +353,9 @@ class AppState {
     fun setSpeed(v: Float) {
         speed = v
         Prefs.speed = v
-        // JLayer 不支持变速：只记录，切歌时如需可在此处重启
+        // VLC 支持变速；回退到内置解码器时不支持
+        if (player.setRate(v)) toast("倍速：${"%.2f".format(v).trimEnd('0').trimEnd('.')}×")
+        else toast("当前内核不支持倍速")
     }
 
     fun setQuality(q: String) {

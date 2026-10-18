@@ -35,15 +35,7 @@ object LocalLib {
     fun download(song: Song, quality: String, onProgress: ((Long, Long) -> Unit)? = null): DownloadRecord {
         val d = runCatching { Api.detail(song.ssid) }
             .getOrElse { SongDetail(song.ssid, "", coverRef(song.coverUrl), emptyMap()) }
-        val url = if (d.audio.isEmpty()) {
-            Api.audioUrlMp3(song.ssid, quality)
-        } else {
-            val mp3 = d.audio.mapValues { it.value.firstOrNull { u -> u.contains(".mp3", true) } }
-                .filterValues { it != null }.mapValues { it.value!! }
-            val src = if (mp3.isEmpty()) d.audio.mapValues { it.value.first() } else mp3
-            val key = src.keys.minByOrNull { kotlin.math.abs(Api.rank(it) - Api.rank(quality)) }!!
-            src[key]!!
-        }
+        val url = Api.audioUrl(song.ssid, quality)
         val base = safe("${song.artist} - ${song.title}")
         val ext = url.substringBefore('?').substringAfterLast('.', "mp3")
             .takeIf { it.length in 2..4 } ?: "mp3"

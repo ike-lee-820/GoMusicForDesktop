@@ -19,9 +19,12 @@ jobs:
             arch: windows-x64
           - os: macos-13
             arch: macos-x64
+            optional: true
           - os: macos-14
             arch: macos-arm64
     runs-on: ${{ matrix.os }}
+    # macos-13（Intel）Runner 正在退役，常常排不到队，允许失败不影响发布
+    continue-on-error: ${{ matrix.optional == true }}
     permissions:
       contents: write
     steps:
@@ -75,6 +78,7 @@ jobs:
 
   release:
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
