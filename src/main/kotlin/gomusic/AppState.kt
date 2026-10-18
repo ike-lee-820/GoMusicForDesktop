@@ -350,7 +350,7 @@ class AppState {
         toast(listOf("列表循环", "随机播放", "单曲循环")[playMode])
     }
 
-    fun setSpeed(v: Float) {
+    fun chooseSpeed(v: Float) {
         speed = v
         Prefs.speed = v
         // VLC 支持变速；回退到内置解码器时不支持
@@ -358,7 +358,7 @@ class AppState {
         else toast("当前内核不支持倍速")
     }
 
-    fun setQuality(q: String) {
+    fun chooseQuality(q: String) {
         quality = q
         Prefs.quality = q
         Api.clearCache()

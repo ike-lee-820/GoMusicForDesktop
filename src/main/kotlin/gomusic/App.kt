@@ -651,7 +651,7 @@ fun QualityMenu(state: AppState) {
             list.forEach { q ->
                 androidx.compose.material3.DropdownMenuItem(
                     text = { Txt(qualityLabel(q), 14) },
-                    onClick = { open = false; state.setQuality(q) },
+                    onClick = { open = false; state.chooseQuality(q) },
                 )
             }
         }
