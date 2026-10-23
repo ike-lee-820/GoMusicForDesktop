@@ -17,9 +17,8 @@ jobs:
             arch: linux-arm64
           - os: windows-latest
             arch: windows-x64
-          - os: macos-13
+          - os: macos-15-intel
             arch: macos-x64
-            optional: true
           - os: macos-14
             arch: macos-arm64
     runs-on: ${{ matrix.os }}
@@ -53,6 +52,8 @@ jobs:
           done
       - name: Publish log
         if: always()
+        continue-on-error: true
+        shell: bash
         run: |
           git config user.name ci-bot
           git config user.email ci-bot@example.com
@@ -84,6 +85,8 @@ jobs:
           ls -l "$ROOT/GoMusic-$ARCH.zip"
       - name: Publish log (after package)
         if: always()
+        continue-on-error: true
+        shell: bash
         run: |
           git config user.name ci-bot
           git config user.email ci-bot@example.com
@@ -111,6 +114,7 @@ jobs:
           path: out
           merge-multiple: true
       - name: Publish release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
