@@ -267,6 +267,7 @@ fun HistoryDialog(state: AppState) {
     }
 }
 
+@Composable
 fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
     val q = state.query.trim()
     when {

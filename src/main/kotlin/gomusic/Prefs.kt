@@ -41,35 +41,6 @@ data class PrefsFile(
     val playMode: Int = 0,
     val speed: Float = 1f,
     val themeColor: Long? = null,
-),
-    val cover: String? = null,
-)
-
-/** 一条下载记录：音频 + 封面 + 歌词 + 信息文件 */
-@Serializable
-data class DownloadRecord(
-    val ssid: String,
-    val title: String = "",
-    val artist: String = "",
-    val album: String = "",
-    val quality: String = "",
-    val audio: String = "",
-    val cover: String = "",
-    val lyric: String = "",
-    val meta: String = "",
-    val time: Long = 0L,
-)
-
-@Serializable
-data class PrefsFile(
-    val playCounts: Map<String, Int> = emptyMap(),
-    val history: List<String> = emptyList(),
-    val playlists: List<Playlist> = emptyList(),
-    val downloads: List<DownloadRecord> = emptyList(),
-    val quality: String = "normal",
-    val playMode: Int = 0,
-    val speed: Float = 1f,
-    val themeColor: Long? = null,
 )
 
 /** 配置与本地索引，存在 ~/.gomusic/ 下 */
