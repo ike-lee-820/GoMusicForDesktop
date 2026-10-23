@@ -80,26 +80,7 @@ jobs:
           fi
           echo "app dir = $DIR" | tee -a build.log
           ls -la "$DIR" | tee -a build.log
-          ZIPSCRIPT="$ROOT/ci_zip.py"
-          cat > "$ZIPSCRIPT" <<'PYEOF'
-import os, sys, zipfile
-src, out = sys.argv[1], sys.argv[2]
-if os.path.exists(out):
-    os.remove(out)
-n = 0
-with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
-    for base, dirs, files in os.walk(src):
-        for f in files:
-            p = os.path.join(base, f)
-            rel = os.path.relpath(p, src)
-            try:
-                z.write(p, rel)
-                n += 1
-            except Exception as e:
-                print('skip', rel, e)
-print('packed files:', n)
-PYEOF
-          python3 "$ZIPSCRIPT" "$DIR" "$ROOT/GoMusic-$ARCH.zip" 2>&1 | tee -a build.log
+          python3 "$ROOT/ci/package.py" "$DIR" "$ROOT/GoMusic-$ARCH.zip" 2>&1 | tee -a build.log
           ls -l "$ROOT/GoMusic-$ARCH.zip"
       - name: Publish log (after package)
         if: always()
