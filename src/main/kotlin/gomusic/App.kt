@@ -59,6 +59,7 @@ import androidx.compose.material.icons.outlined.SkipNext
 import androidx.compose.material.icons.outlined.SkipPrevious
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -236,8 +237,15 @@ fun HistoryDialog(state: AppState) {
                     Txt("还没有播放记录", 14, color = MutedColor)
                 }
             } else {
+                // 最多 10000 条：先渲染前 200 条，滚到底再继续
+                var visible by remember(list) { mutableIntStateOf(200) }
+                val shown = list.take(visible)
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
-                    itemsIndexed(list, key = { _, s -> s.ssid }) { i, s ->
+                    item { Txt("共 ${list.size} 条", 12, Modifier.padding(start = 16.dp, bottom = 4.dp), color = MutedColor) }
+                    itemsIndexed(shown, key = { _, s -> s.ssid }) { i, s ->
+                        if (i >= shown.lastIndex && visible < list.size) {
+                            LaunchedEffect(visible) { visible = (visible + 200).coerceAtMost(list.size) }
+                        }
                         Row(
                             Modifier.fillMaxWidth().height(64.dp)
                                 .clickable { state.playSongs(list, i) }

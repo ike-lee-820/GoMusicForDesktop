@@ -87,7 +87,7 @@ class AppState {
     var history by mutableStateOf(Prefs.history); private set
 
     fun pushHistory(ssid: String) {
-        val l = (listOf(ssid) + history.filter { it != ssid }).take(60)
+        val l = (listOf(ssid) + history.filter { it != ssid }).take(MAX_HISTORY)
         history = l
         Prefs.history = l
     }

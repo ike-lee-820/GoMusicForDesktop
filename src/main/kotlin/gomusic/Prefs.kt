@@ -5,6 +5,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 
+/** 播放历史上限 */
+const val MAX_HISTORY = 10000
+
 @Serializable
 data class Playlist(
     val id: String,
@@ -100,7 +103,7 @@ object Prefs {
     /** 播放历史（最近在前） */
     var history: List<String>
         get() = data.history
-        set(v) { data = data.copy(history = v.take(60)); save() }
+        set(v) { data = data.copy(history = v.take(MAX_HISTORY)); save() }
 
     var playlists: List<Playlist>
         get() = data.playlists
