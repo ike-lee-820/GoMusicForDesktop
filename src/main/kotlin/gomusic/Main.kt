@@ -1,7 +1,7 @@
 package gomusic
 
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.key.Key
@@ -11,6 +11,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 
@@ -44,5 +45,30 @@ fun main() = application {
         },
     ) {
         App(state)
+    }
+
+    // 悬浮歌词：独立透明窗口，始终置顶，可拖动
+    if (state.floatOn) {
+        val fs = rememberWindowState(
+            position = WindowPosition(Prefs.floatX.dp, Prefs.floatY.dp),
+            size = DpSize(820.dp, 130.dp),
+        )
+        DisposableEffect(fs) {
+            onDispose {
+                Prefs.floatX = fs.position.x.value
+                Prefs.floatY = fs.position.y.value
+            }
+        }
+        Window(
+            title = "GoMusic 悬浮歌词",
+            state = fs,
+            undecorated = true,
+            transparent = true,
+            alwaysOnTop = true,
+            resizable = false,
+            onCloseRequest = { state.setFloatOn(false) },
+        ) {
+            FloatLyricContent(state)
+        }
     }
 }

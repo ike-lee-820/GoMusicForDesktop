@@ -37,6 +37,14 @@ data class PrefsFile(
     val playMode: Int = 0,
     val speed: Float = 1f,
     val themeColor: Long? = null,
+    val floatOn: Boolean = false,
+    val floatColor: Long = 0xFFFFFFFF,
+    val floatStrokeColor: Long = 0xCC000000,
+    val floatStroke: Float = 3f,
+    val floatSize: Float = 18f,
+    val floatFont: Int = 0,
+    val floatX: Float = 120f,
+    val floatY: Float = 80f,
 )
 
 /** 配置与本地索引，存在 ~/.gomusic/ 下 */
@@ -91,4 +99,38 @@ object Prefs {
     var themeColor: Long?
         get() = data.themeColor
         set(v) { data = data.copy(themeColor = v); save() }
+
+    // ---------- 悬浮歌词 ----------
+    var floatOn: Boolean
+        get() = data.floatOn
+        set(v) { data = data.copy(floatOn = v); save() }
+
+    var floatColor: Long
+        get() = data.floatColor
+        set(v) { data = data.copy(floatColor = v); save() }
+
+    var floatStrokeColor: Long
+        get() = data.floatStrokeColor
+        set(v) { data = data.copy(floatStrokeColor = v); save() }
+
+    var floatStroke: Float
+        get() = data.floatStroke
+        set(v) { data = data.copy(floatStroke = v); save() }
+
+    var floatSize: Float
+        get() = data.floatSize
+        set(v) { data = data.copy(floatSize = v); save() }
+
+    /** 0 默认 1 无衬线 2 衬线 3 等宽 4 粗体 */
+    var floatFont: Int
+        get() = data.floatFont
+        set(v) { data = data.copy(floatFont = v); save() }
+
+    var floatX: Float
+        get() = data.floatX
+        set(v) { data = data.copy(floatX = v); save() }
+
+    var floatY: Float
+        get() = data.floatY
+        set(v) { data = data.copy(floatY = v); save() }
 }

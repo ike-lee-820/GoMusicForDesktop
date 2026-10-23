@@ -48,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -248,6 +249,32 @@ fun hoverState(): Pair<Boolean, Modifier> {
     val src = remember { MutableInteractionSource() }
     val hovered by src.collectIsHoveredAsState()
     return hovered to Modifier.hoverable(src)
+}
+
+/** 悬浮歌词用的取色行 */
+@Composable
+fun FloatColorRow(current: Color, onPick: (Color) -> Unit) {
+    val presets = listOf(
+        0xFFFFFFFFL, 0xFF000000L, 0xFFD0BCFFL, 0xFF64B5F6L,
+        0xFF81C784L, 0xFFFFF176L, 0xFFFF8A80L, 0xFFF48FB1L,
+    ).map { Color(it.toULong()) }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        presets.forEach { c ->
+            val on = c == current
+            Box(
+                Modifier.size(30.dp).clip(CircleShape).background(c)
+                    .clickable { onPick(c) },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (on) {
+                    Box(
+                        Modifier.size(12.dp).clip(CircleShape)
+                            .background(if (c.luminance() > 0.5f) Color.Black else Color.White),
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** 自带进度条，避免依赖 material3 不同版本的 API 差异 */
