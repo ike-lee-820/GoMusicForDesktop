@@ -37,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.ArrowBack
@@ -97,7 +98,7 @@ fun App(state: AppState) {
 @Composable
 fun SideRail(state: AppState) {
     val items = listOf(
-        "歌曲" to androidx.compose.material.icons.outlined.MusicNote,
+        "歌曲" to QueueMusic,
         "专辑" to Icons.Outlined.Album,
         "歌手" to Icons.Outlined.Person,
         "歌单" to Icons.Outlined.PlaylistPlay,
