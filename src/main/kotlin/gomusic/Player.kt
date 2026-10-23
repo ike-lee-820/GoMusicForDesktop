@@ -5,6 +5,7 @@ import com.jogamp.openal.ALC
 import com.jogamp.openal.ALCcontext
 import com.jogamp.openal.ALCdevice
 import com.jogamp.openal.ALFactory
+import org.bytedeco.ffmpeg.global.avutil
 import org.bytedeco.javacv.FFmpegFrameGrabber
 import org.bytedeco.javacv.Frame
 import org.bytedeco.javacv.FrameGrabber
@@ -132,8 +133,16 @@ class JavaCvEngine : PlayerEngine {
         var played = 0L
     }
 
+    /**
+     * 解码并填充一个 OpenAL 缓冲。
+     *
+     * 关键点：FFmpeg 解码出来可能是 planar（fltp / s16p），即每个声道一个 buffer。
+     * 必须按帧把各声道交错成 LRLRLR 再交给 OpenAL，
+     * 否则只会拿到第一个声道，听起来像单声道 / 变调 / 有杂音。
+     */
     private fun fill(al: AL, g: FFmpegFrameGrabber, channels: Int, buf: Int, sink: Sink): Boolean {
-        val target = FRAMES_PER_BUFFER * channels
+        val ch = channels.coerceAtLeast(1)
+        val target = FRAMES_PER_BUFFER * ch
         val acc = ShortArray(target)
         var n = 0
         while (n < target) {
@@ -142,25 +151,49 @@ class JavaCvEngine : PlayerEngine {
             } catch (e: Exception) {
                 break
             }
-            val s = f.samples?.firstOrNull() ?: break
-            when (s) {
-                is ShortBuffer -> {
-                    val rem = s.remaining()
-                    val take = minOf(rem, target - n)
-                    for (i in 0 until take) acc[n + i] = s.get()
-                    n += take
-                }
-                is FloatBuffer -> {
-                    val rem = s.remaining()
-                    val take = minOf(rem, target - n)
-                    for (i in 0 until take) {
-                        val v = (s.get() * 32767f).toInt().coerceIn(-32768, 32767)
-                        acc[n + i] = v.toShort()
+            val bufs = f.samples
+            if (bufs.isNullOrEmpty()) break
+            val first = bufs[0] ?: break
+            val planar = bufs.size > 1
+            val perBuf = first.remaining()
+            if (perBuf <= 0) break
+            val frames = if (planar) perBuf else perBuf / ch
+            if (frames <= 0) break
+            val room = (target - n) / ch
+            if (room <= 0) break
+            val take = minOf(frames, room)
+            val cnt = take * ch
+            if (planar) {
+                when (first) {
+                    is ShortBuffer -> {
+                        val sbs = Array(ch) { bufs.getOrNull(it) as? ShortBuffer }
+                        for (fr in 0 until take) {
+                            for (c in 0 until ch) {
+                                acc[n + fr * ch + c] = sbs[c]?.get() ?: 0
+                            }
+                        }
                     }
-                    n += take
+                    is FloatBuffer -> {
+                        val fbs = Array(ch) { bufs.getOrNull(it) as? FloatBuffer }
+                        for (fr in 0 until take) {
+                            for (c in 0 until ch) {
+                                val v = ((fbs[c]?.get() ?: 0f) * 32767f).toInt().coerceIn(-32768, 32767)
+                                acc[n + fr * ch + c] = v.toShort()
+                            }
+                        }
+                    }
+                    else -> break
                 }
-                else -> break
+            } else {
+                when (first) {
+                    is ShortBuffer -> for (i in 0 until cnt) acc[n + i] = first.get()
+                    is FloatBuffer -> for (i in 0 until cnt) {
+                        acc[n + i] = ((first.get() * 32767f).toInt().coerceIn(-32768, 32767)).toShort()
+                    }
+                    else -> break
+                }
             }
+            n += cnt
         }
         if (n == 0) return false
         val bb = ByteBuffer.allocateDirect(n * 2).order(ByteOrder.LITTLE_ENDIAN)
@@ -192,6 +225,8 @@ class JavaCvEngine : PlayerEngine {
 
             val grab = FFmpegFrameGrabber(ref)
             grab.sampleMode = FrameGrabber.SampleMode.SHORT
+            // 强制重采样成交错的 s16：避免 fltp 等 planar 格式带来的声道处理差异
+            runCatching { grab.sampleFormat = avutil.AV_SAMPLE_FMT_S16 }
             grab.start()
             g = grab
 

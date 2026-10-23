@@ -79,6 +79,9 @@ fun App(state: AppState) {
     GoTheme(state.primary) {
         Box(Modifier.fillMaxSize().background(BgColor)) {
             Row(Modifier.fillMaxSize()) {
+                // 四个标签移到左侧侧栏（手机端是底部导航栏）
+                SideRail(state)
+                Box(Modifier.fillMaxHeight().width(1.dp).background(SurfaceHiColor))
                 LeftPane(state, Modifier.weight(1.15f).fillMaxHeight().widthIn(min = 420.dp))
                 Box(Modifier.fillMaxHeight().width(1.dp).background(SurfaceHiColor))
                 RightPane(state, Modifier.weight(1f).fillMaxHeight().widthIn(min = 380.dp))
@@ -87,6 +90,82 @@ fun App(state: AppState) {
             if (state.showSettings) SettingsDialog(state)
             if (state.showHistory) HistoryDialog(state)
         }
+    }
+}
+
+/** 左侧侧栏：歌曲 / 专辑 / 歌手 / 歌单 + 设置，与手机端底部四个标签对应 */
+@Composable
+fun SideRail(state: AppState) {
+    val items = listOf(
+        "歌曲" to androidx.compose.material.icons.outlined.MusicNote,
+        "专辑" to Icons.Outlined.Album,
+        "歌手" to Icons.Outlined.Person,
+        "歌单" to Icons.Outlined.PlaylistPlay,
+    )
+    Column(
+        Modifier.width(180.dp).fillMaxHeight().background(SurfaceColor)
+            .padding(vertical = 14.dp),
+    ) {
+        Txt("GoMusic", 18, Modifier.padding(horizontal = 18.dp, vertical = 6.dp), FontWeight.Bold)
+        Spacer(Modifier.height(10.dp))
+        items.forEachIndexed { i, (name, icon) ->
+            val sel = state.tab == i && state.page == null
+            Row(
+                Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 10.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (sel) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent)
+                    .clickable {
+                        state.tab = i
+                        state.page = null
+                    }
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.Icon(
+                    icon, null,
+                    tint = if (sel) MaterialTheme.colorScheme.primary else MutedColor,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(12.dp))
+                Txt(
+                    name, 14,
+                    color = if (sel) MaterialTheme.colorScheme.primary else Color(0xFFE6E0E9),
+                    weight = if (sel) FontWeight.SemiBold else FontWeight.Medium,
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+        }
+        Spacer(Modifier.weight(1f))
+        // 历史入口，与手机端歌曲栏顶部的「历史」一致
+        Row(
+            Modifier.fillMaxWidth().height(42.dp).padding(horizontal = 10.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable { state.showHistory = true }
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            androidx.compose.material3.Icon(Icons.Outlined.Loop, null, tint = MutedColor, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(12.dp))
+            Txt("历史", 14, color = MutedColor)
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(
+            Modifier.fillMaxWidth().height(42.dp).padding(horizontal = 10.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable { state.showSettings = true }
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            androidx.compose.material3.Icon(Icons.Outlined.Settings, null, tint = MutedColor, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(12.dp))
+            Txt("设置", 14, color = MutedColor)
+        }
+        Spacer(Modifier.height(6.dp))
+        Txt(
+            if (state.offline) "离线模式" else "已连接",
+            11, Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            color = MutedColor,
+        )
     }
 }
 
@@ -699,10 +778,13 @@ fun LyricView(state: AppState) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Txt("暂无歌词", 13, color = MutedColor) }
         return
     }
-    val idx = state.lyricIndex
+    val idx = state.lyricIndex.coerceIn(0, lines.lastIndex)
     val listState = rememberLazyListState()
-    LaunchedEffect(idx) {
-        if (idx >= 0) runCatching { listState.animateScrollToItem((idx - 1).coerceAtLeast(0)) }
+    // 索引必须夹在歌词行数内：切歌时旧索引可能远大于新歌词行数（会抛 IndexOutOfBounds）
+    LaunchedEffect(idx, lines.size) {
+        if (lines.isNotEmpty()) {
+            runCatching { listState.animateScrollToItem((idx - 1).coerceAtLeast(0).coerceAtMost(lines.lastIndex)) }
+        }
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp), state = listState) {
         itemsIndexed(lines) { i, l ->
