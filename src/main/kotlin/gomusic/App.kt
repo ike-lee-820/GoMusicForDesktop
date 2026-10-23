@@ -98,7 +98,7 @@ fun App(state: AppState) {
 @Composable
 fun SideRail(state: AppState) {
     val items = listOf(
-        "歌曲" to QueueMusic,
+        "歌曲" to Icons.Outlined.MusicNote,
         "专辑" to Icons.Outlined.Album,
         "歌手" to Icons.Outlined.Person,
         "歌单" to Icons.Outlined.PlaylistPlay,
