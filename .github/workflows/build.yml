@@ -68,16 +68,50 @@ jobs:
           grep -E "^e:|FAILURE|error:" build.log | head -40
           exit 1
 
-      - name: Zip (unix)
-        if: matrix.os != 'windows-latest'
+      # 用 python 打包：三个系统都自带 python3，且不依赖 zip / pwsh 差异
+      - name: Package
+        shell: bash
         run: |
-          cd build/compose/binaries/main-release/app
-          zip -r ../../../../GoMusic-${{ matrix.arch }}.zip .
-      - name: Zip (windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
+          ROOT="$GITHUB_WORKSPACE"
+          ARCH="${{ matrix.arch }}"
+          DIR="$ROOT/build/compose/binaries/main-release/app"
+          if [ ! -d "$DIR" ]; then
+            DIR=$(find "$ROOT/build/compose/binaries" -maxdepth 4 -type d -name app | head -1)
+          fi
+          echo "app dir = $DIR" | tee -a build.log
+          ls -la "$DIR" | tee -a build.log
+          ZIPSCRIPT="$ROOT/ci_zip.py"
+          cat > "$ZIPSCRIPT" <<'PYEOF'
+import os, sys, zipfile
+src, out = sys.argv[1], sys.argv[2]
+if os.path.exists(out):
+    os.remove(out)
+n = 0
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+    for base, dirs, files in os.walk(src):
+        for f in files:
+            p = os.path.join(base, f)
+            rel = os.path.relpath(p, src)
+            try:
+                z.write(p, rel)
+                n += 1
+            except Exception as e:
+                print('skip', rel, e)
+print('packed files:', n)
+PYEOF
+          python3 "$ZIPSCRIPT" "$DIR" "$ROOT/GoMusic-$ARCH.zip" 2>&1 | tee -a build.log
+          ls -l "$ROOT/GoMusic-$ARCH.zip"
+      - name: Publish log (after package)
+        if: always()
         run: |
-          Compress-Archive -Path build/compose/binaries/main-release/app/* -DestinationPath GoMusic-${{ matrix.arch }}.zip
+          git config user.name ci-bot
+          git config user.email ci-bot@example.com
+          git checkout -B ci-logs-${{ matrix.arch }}
+          mkdir -p ci
+          cp build.log ci/build.log || true
+          git add -f ci/build.log
+          git commit -m "ci log ${{ matrix.arch }} $(date -u +%FT%TZ)" || echo none
+          git push -f origin ci-logs-${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -102,8 +136,15 @@ jobs:
           set -euo pipefail
           TAG="v1.0.0"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "GoMusic 桌面版 $TAG" --notes "自动构建：Windows / Linux / macOS（x64 与 ARM64）"
+            gh release create "$TAG" --title "GoMusic Desktop $TAG" --notes "Auto build: Windows / Linux / macOS (x64 and ARM64)"
           fi
-          for f in out/*.zip; do
+          shopt -s nullglob
+          files=(out/*.zip)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no artifact to upload"
+            ls -R out || true
+            exit 1
+          fi
+          for f in "${files[@]}"; do
             gh release upload "$TAG" "$f" --clobber
           done
