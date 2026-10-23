@@ -250,6 +250,29 @@ fun hoverState(): Pair<Boolean, Modifier> {
     return hovered to Modifier.hoverable(src)
 }
 
+/** 单行输入框 */
+@Composable
+fun GoField(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+) {
+    androidx.compose.material3.OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Txt(label, 12) },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/**
+ * 来源前缀：网易云曲库的结果在歌名 / 专辑名前加「(网)」，
+ * 与本站曲库区分（不用图标、不用 emoji）。
+ */
+fun titleWithSource(title: String, source: String): String =
+    if (source == SRC_NETEASE) "(网)$title" else title
+
 /** 自带进度条，避免依赖 material3 不同版本的 API 差异 */
 @Composable
 fun Bar(progress: Float?, modifier: Modifier = Modifier, color: Color) {

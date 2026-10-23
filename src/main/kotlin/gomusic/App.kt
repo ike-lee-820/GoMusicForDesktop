@@ -88,8 +88,15 @@ fun App(state: AppState) {
                 RightPane(state, Modifier.weight(1f).fillMaxHeight().widthIn(min = 380.dp))
             }
             ToastHost(state.toastMsg)
-            if (state.showSettings) SettingsDialog(state)
+            if (state.showSettings) {
+                if (state.nmOn && !state.nmReady) NmLoginDialog(state) else SettingsDialog(state)
+            }
             if (state.showHistory) HistoryDialog(state)
+            if (state.nmPage != null) {
+                Box(
+                    Modifier.fillMaxSize().background(BgColor),
+                ) { NmSongsPage(state) }
+            }
         }
     }
 }
@@ -97,11 +104,13 @@ fun App(state: AppState) {
 /** 左侧侧栏：歌曲 / 专辑 / 歌手 / 歌单 + 设置，与手机端底部四个标签对应 */
 @Composable
 fun SideRail(state: AppState) {
+    // 顺序与手机端底部一致，首页在最中间
     val items = listOf(
-        "歌曲" to Icons.Outlined.MusicNote,
-        "专辑" to Icons.Outlined.Album,
-        "歌手" to Icons.Outlined.Person,
-        "歌单" to Icons.Outlined.PlaylistPlay,
+        TAB_SONGS to ("歌曲" to Icons.Outlined.MusicNote),
+        TAB_ALBUMS to ("专辑" to Icons.Outlined.Album),
+        TAB_HOME to ("首页" to Icons.Outlined.Home),
+        TAB_ARTISTS to ("歌手" to Icons.Outlined.Person),
+        TAB_PLAYLISTS to ("歌单" to Icons.Outlined.PlaylistPlay),
     )
     Column(
         Modifier.width(180.dp).fillMaxHeight().background(SurfaceColor)
@@ -109,15 +118,16 @@ fun SideRail(state: AppState) {
     ) {
         Txt("GoMusic", 18, Modifier.padding(horizontal = 18.dp, vertical = 6.dp), FontWeight.Bold)
         Spacer(Modifier.height(10.dp))
-        items.forEachIndexed { i, (name, icon) ->
-            val sel = state.tab == i && state.page == null
+        items.forEach { (t, pair) ->
+            val (name, icon) = pair
+            val sel = state.tab == t && state.page == null && state.nmPage == null
             Row(
                 Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 10.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(if (sel) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent)
                     .clickable {
-                        state.tab = i
-                        state.page = null
+                        state.chooseTab(t)
+                        state.query = ""
                     }
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -365,25 +375,52 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
             }
         }
         else -> when (state.tab) {
-            0 -> {
-                val list = state.ranked().filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
+            TAB_HOME -> HomeTab(state)
+            TAB_SONGS -> {
+                // 搜索时触发网易云搜索（防抖在 state 内）
+                LaunchedEffect(q, state.nmReady) { state.searchNetease(q) }
+                val local = state.ranked().filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
+                val list = state.mix(local, state.nmSongs)
                 Column(Modifier.fillMaxSize()) {
                     if (q.isEmpty() && state.historySongs.isNotEmpty()) HistoryRow(state)
-                    Box(Modifier.weight(1f)) { SongList(state, list, onPick) }
-                }
-            }
-            1 -> {
-                val groups = state.albumGroups().filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
-                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
-                    items(groups, key = { it.artist to it.album }) { g ->
-                        GroupRow(g.title, g.subtitle, g.cover, onClick = { state.page = Page.Album(g.artist, g.album) }) {
-                            onPick(g.songs.map { it.ssid }, g.title)
+                    if (state.nmSearching) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp), strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Txt("正在搜索网易云曲库", 12, color = MutedColor)
                         }
+                    }
+                    Box(Modifier.weight(1f)) {
+                        SongList(state, list, onPick, onReachEnd = if (state.nmHasMore) ({ state.loadMoreNetease() }) else null)
                     }
                 }
             }
-            2 -> {
-                val groups = state.artistGroups().filter { q.isEmpty() || it.title.contains(q, true) }
+            TAB_ALBUMS -> {
+                LaunchedEffect(q, state.nmReady) { state.searchNetease(q) }
+                val local = state.albumGroups().filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
+                val groups = state.mix(local, state.nmAlbums)
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
+                    itemsIndexed(groups, key = { i, g -> if (g.nmId > 0) "nm${'$'}{g.nmId}" else "loc${'$'}{g.title}#$i" }) { _, g ->
+                        GroupRow(
+                            titleWithSource(g.title, g.source), g.subtitle, g.cover,
+                            onClick = {
+                                if (g.source == SRC_NETEASE) state.openNmGroupPublic(g)
+                                else state.page = Page.Album(g.artist, g.album)
+                            },
+                        ) { onPick(g.songs.map { it.ssid }, g.title) }
+                    }
+                }
+            }
+            TAB_ARTISTS -> {
+                LaunchedEffect(q, state.nmReady) { state.searchNetease(q) }
+                val local = state.artistGroups().filter { q.isEmpty() || it.title.contains(q, true) }
+                val groups = state.mix(local, state.nmArtists)
                 LazyVerticalGrid(
                     GridCells.Adaptive(150.dp),
                     Modifier.fillMaxSize(),
@@ -391,10 +428,14 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    items(groups, key = { it.title }) { g ->
-                        GroupCard(g.title, g.subtitle, g.cover, onClick = { state.page = Page.Artist(g.artist) }) {
-                            onPick(g.songs.map { it.ssid }, g.title)
-                        }
+                    itemsIndexed(groups, key = { i, g -> if (g.nmId > 0) "nm${'$'}{g.nmId}" else "loc${'$'}{g.title}#$i" }) { _, g ->
+                        GroupCard(
+                            titleWithSource(g.title, g.source), g.subtitle, g.cover,
+                            onClick = {
+                                if (g.source == SRC_NETEASE) state.openNmGroupPublic(g)
+                                else state.page = Page.Artist(g.artist)
+                            },
+                        ) { onPick(g.songs.map { it.ssid }, g.title) }
                     }
                 }
             }
@@ -404,9 +445,15 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
 }
 
 @Composable
-fun SongList(state: AppState, list: List<Song>, onPick: (List<String>, String) -> Unit) {
+/**
+ * 歌曲列表。[onReachEnd] 非空时，滑到倒数第 3 项就触发一次（用于网易云翻页）。
+ */
+fun SongList(state: AppState, list: List<Song>, onPick: (List<String>, String) -> Unit, onReachEnd: (() -> Unit)? = null) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
-        items(list, key = { it.ssid }) { s ->
+        itemsIndexed(list, key = { i, s -> "${s.ssid}#$i" }) { i, s ->
+            if (onReachEnd != null && i >= list.lastIndex - 2) {
+                LaunchedEffect(i) { onReachEnd() }
+            }
             val (hover, hoverM) = hoverState()
             val cur = s.ssid == state.curSsid
             val bg = when {
@@ -431,7 +478,7 @@ fun SongList(state: AppState, list: List<Song>, onPick: (List<String>, String) -
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Txt(s.title, 15, weight = FontWeight.Medium, color = if (cur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, maxLines = 1)
+                    Txt(titleWithSource(s.title, s.source), 15, weight = FontWeight.Medium, color = if (cur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, maxLines = 1)
                     Txt("${s.artist} · ${s.album}", 12, color = MutedColor, maxLines = 1)
                 }
                 IconBtn(
@@ -558,7 +605,7 @@ fun AlbumPage(state: AppState, p: Page.Album, onPick: (List<String>, String) -> 
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Txt(s.title, 15, weight = FontWeight.Medium, color = if (cur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, maxLines = 1)
+                    Txt(titleWithSource(s.title, s.source), 15, weight = FontWeight.Medium, color = if (cur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, maxLines = 1)
                     Txt("${s.artist} · ${s.album}", 12, color = MutedColor, maxLines = 1)
                 }
                 IconBtn(
@@ -630,7 +677,7 @@ fun ArtistPage(state: AppState, p: Page.Artist, onPick: (List<String>, String) -
                     Cover(s.coverUrl, Modifier.size(48.dp), 96, 8.dp)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Txt(s.title, 15, weight = FontWeight.Medium, color = if (cur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, maxLines = 1)
+                        Txt(titleWithSource(s.title, s.source), 15, weight = FontWeight.Medium, color = if (cur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, maxLines = 1)
                         Txt("${s.artist} · ${s.album}", 12, color = MutedColor, maxLines = 1)
                     }
                     IconBtn(
@@ -877,6 +924,55 @@ fun SettingsDialog(state: AppState) {
             Spacer(Modifier.height(8.dp))
             GoButton("重新连接") { state.load() }
             Spacer(Modifier.height(16.dp))
+            // ---------- 网易云曲库 ----------
+            Txt("网易云曲库", 15, weight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceHiColor)
+                    .clickable { state.chooseNmOn(!state.nmOn) }.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Txt("接入网易云曲库", 14, weight = FontWeight.Medium)
+                    Txt(
+                        when {
+                            !state.nmOn -> "关闭"
+                            state.nmReady -> "已登录：${state.nmUser}"
+                            else -> "已开启，需要登录"
+                        },
+                        12, color = MutedColor,
+                    )
+                }
+                Switch(
+                    checked = state.nmOn,
+                    onCheckedChange = { state.chooseNmOn(it) },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = BgColor,
+                        checkedTrackColor = MaterialTheme.colorScheme.primary,
+                        uncheckedThumbColor = MutedColor,
+                        uncheckedTrackColor = SurfaceColor,
+                    ),
+                )
+            }
+            if (state.nmOn) {
+                Spacer(Modifier.height(10.dp))
+                if (state.nmReady) {
+                    Txt("账号：${state.nmUser}", 13, color = MutedColor)
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        GoButton("退出登录") { state.nmLogout() }
+                        GoButton("刷新首页") { state.loadHome() }
+                    }
+                } else {
+                    Txt("开启后需要登录网易云账号才会使用网易云搜索", 12, color = MutedColor)
+                    Spacer(Modifier.height(8.dp))
+                    GoButton("登录网易云", primary = true) { }
+                }
+                Spacer(Modifier.height(6.dp))
+                Txt("请求日志：${NmLog.path()}", 11, color = MutedColor)
+            }
+            Spacer(Modifier.height(16.dp))
+
             Txt("播放内核", 15, weight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             Txt("当前：${state.engineName}（FFmpeg 解码 + OpenAL 输出；不可用时回退内置 MP3 解码）", 13, color = MutedColor)

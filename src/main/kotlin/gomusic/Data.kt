@@ -21,6 +21,21 @@ import java.util.concurrent.TimeUnit
 const val BASE = "https://gomusic.myocd.de5.net"
 
 @Serializable
+/** 曲库来源：本站 / 网易云 */
+const val SRC_LOCAL = "local"
+const val SRC_NETEASE = "netease"
+
+/** 网易云歌曲在本地索引里的 ssid 前缀 */
+const val NM_PREFIX = "nm"
+
+/** 网易云 API 站 */
+const val NM_BASE = "https://mapi.myocd.de5.net"
+
+fun isNetease(ssid: String?): Boolean = ssid?.startsWith(NM_PREFIX) == true
+fun neteaseIdOf(ssid: String?): Long? =
+    ssid?.takeIf { it.startsWith(NM_PREFIX) }?.removePrefix(NM_PREFIX)?.toLongOrNull()
+
+@Serializable
 data class Song(
     val ssid: String,
     val title: String = "",
@@ -30,6 +45,14 @@ data class Song(
     val repoName: String? = null,
     val owner: String? = null,
     val locked: Boolean? = null,
+    /** 曲库来源：[SRC_LOCAL] 或 [SRC_NETEASE] */
+    val source: String = SRC_LOCAL,
+    /** 网易云歌曲 id（source = [SRC_NETEASE] 时有效） */
+    val nmId: Long = 0,
+    /** 网易云专辑 id */
+    val nmAlbumId: Long = 0,
+    /** 网易云歌手 id */
+    val nmArtistId: Long = 0,
 )
 
 @Serializable

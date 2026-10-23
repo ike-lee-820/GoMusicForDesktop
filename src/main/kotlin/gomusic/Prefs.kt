@@ -8,6 +8,9 @@ import java.io.File
 /** 播放历史上限 */
 const val MAX_HISTORY = 10000
 
+/** 歌曲快照上限 */
+const val MAX_SNAPSHOTS = 3000
+
 @Serializable
 data class Playlist(
     val id: String,
@@ -41,6 +44,10 @@ data class PrefsFile(
     val playMode: Int = 0,
     val speed: Float = 1f,
     val themeColor: Long? = null,
+    val nmEnabled: Boolean = false,
+    val nmCookie: String = "",
+    val nmAccount: String = "",
+    val songSnapshots: Map<String, Song> = emptyMap(),
 )
 
 /** 配置与本地索引，存在 ~/.gomusic/ 下 */
@@ -100,5 +107,28 @@ object Prefs {
     var themeColor: Long?
         get() = data.themeColor
         set(v) { data = data.copy(themeColor = v); save() }
+
+    /** 是否接入网易云曲库，默认关闭 */
+    var nmEnabled: Boolean
+        get() = data.nmEnabled
+        set(v) { data = data.copy(nmEnabled = v); save() }
+
+    var nmCookie: String
+        get() = data.nmCookie
+        set(v) { data = data.copy(nmCookie = v); save() }
+
+    var nmAccount: String
+        get() = data.nmAccount
+        set(v) { data = data.copy(nmAccount = v); save() }
+
+    /** 歌曲信息快照（含网易云），保证历史随时能显示歌名 */
+    var songSnapshots: Map<String, Song>
+        get() = data.songSnapshots
+        set(v) {
+            val trimmed = if (v.size > MAX_SNAPSHOTS) {
+                v.entries.sortedByDescending { it.key }.take(MAX_SNAPSHOTS).associate { it.key to it.value }
+            } else v
+            data = data.copy(songSnapshots = trimmed); save()
+        }
 
 }
