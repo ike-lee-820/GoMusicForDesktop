@@ -172,7 +172,6 @@ fun DownloadBar(d: DlStatus) {
     }
 }
 
-@Composable
 /** 歌曲栏顶部：最近播放，点「全部」进入历史页 */
 @Composable
 fun HistoryRow(state: AppState) {
@@ -196,7 +195,7 @@ fun HistoryRow(state: AppState) {
                 Column(Modifier.width(84.dp).clickable {
                     state.playSongs(list, list.indexOf(s))
                 }) {
-                    Cover(s.coverUrl, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
+                    Cover(s.coverUrl, Modifier.fillMaxWidth().aspectRatio(1f), 128, 12.dp)
                     Spacer(Modifier.height(6.dp))
                     Txt(s.title, 12, maxLines = 1)
                     Txt(s.artist, 11, color = MutedColor, maxLines = 1)
@@ -222,7 +221,7 @@ fun HistoryDialog(state: AppState) {
                 .clickable(enabled = false) {},
         ) {
             Row(
-                Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, vertical = 8.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Txt("播放历史", 16, Modifier.weight(1f), FontWeight.SemiBold)
@@ -253,7 +252,7 @@ fun HistoryDialog(state: AppState) {
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Txt("${i + 1}", 12, Modifier.width(28.dp), color = MutedColor)
-                            Cover(s.coverUrl, Modifier.size(44.dp), 8.dp)
+                            Cover(s.coverUrl, Modifier.size(44.dp), 96, 8.dp)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Txt(s.title, 15, weight = FontWeight.Medium, maxLines = 1)
