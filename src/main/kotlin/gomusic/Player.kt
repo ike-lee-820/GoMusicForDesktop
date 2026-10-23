@@ -2,6 +2,8 @@ package gomusic
 
 import com.jogamp.openal.AL
 import com.jogamp.openal.ALC
+import com.jogamp.openal.ALCcontext
+import com.jogamp.openal.ALCdevice
 import com.jogamp.openal.ALFactory
 import org.bytedeco.javacv.FFmpegFrameGrabber
 import org.bytedeco.javacv.Frame
@@ -71,8 +73,8 @@ class JavaCvEngine : PlayerEngine {
             ?: throw RuntimeException("OpenAL 不可用")
         val alc = runCatching { ALFactory.getALC() }.getOrNull()
             ?: throw RuntimeException("OpenAL 不可用")
-        val dev = runCatching { alc.alcOpenDevice(null as String?) }.getOrDefault(0L)
-        if (dev == 0L) throw RuntimeException("没有可用的音频输出设备")
+        val dev: ALCdevice? = runCatching { alc.alcOpenDevice(null as String?) }.getOrNull()
+        if (dev == null) throw RuntimeException("没有可用的音频输出设备")
         runCatching { alc.alcCloseDevice(dev) }
         // 触发一次类加载，确认 FFmpeg 原生库能加载
         runCatching { Class.forName("org.bytedeco.javacv.FFmpegFrameGrabber") }
@@ -174,17 +176,19 @@ class JavaCvEngine : PlayerEngine {
     private fun run(ref: String, startMs: Long) {
         var al: AL? = null
         var alc: ALC? = null
-        var device = 0L
-        var ctx = 0L
+        var device: ALCdevice? = null
+        var ctx: ALCcontext? = null
         var g: FFmpegFrameGrabber? = null
         try {
             al = ALFactory.getAL()
             alc = ALFactory.getALC()
-            device = alc.alcOpenDevice(null as String?)
-            if (device == 0L) { onError?.invoke("没有可用的音频输出设备"); return }
-            ctx = alc.alcCreateContext(device, null as IntArray?, 0)
-            if (ctx == 0L) { onError?.invoke("无法创建音频上下文"); return }
-            alc.alcMakeContextCurrent(ctx)
+            val dev = alc.alcOpenDevice(null as String?)
+            if (dev == null) { onError?.invoke("没有可用的音频输出设备"); return }
+            device = dev
+            val c = alc.alcCreateContext(dev, null as IntArray?, 0)
+            if (c == null) { onError?.invoke("无法创建音频上下文"); return }
+            ctx = c
+            alc.alcMakeContextCurrent(c)
 
             val grab = FFmpegFrameGrabber(ref)
             grab.sampleMode = FrameGrabber.SampleMode.SHORT
@@ -263,11 +267,11 @@ class JavaCvEngine : PlayerEngine {
             if (!stopFlag.get()) onError?.invoke(e.message ?: "播放失败")
         } finally {
             runCatching { g?.close() }
-            if (ctx != 0L) {
-                runCatching { alc?.alcMakeContextCurrent(0L) }
-                runCatching { alc?.alcDestroyContext(ctx) }
+            ctx?.let {
+                runCatching { alc?.alcMakeContextCurrent(null as ALCcontext?) }
+                runCatching { alc?.alcDestroyContext(it) }
             }
-            if (device != 0L) runCatching { alc?.alcCloseDevice(device) }
+            device?.let { runCatching { alc?.alcCloseDevice(it) } }
         }
     }
 }
