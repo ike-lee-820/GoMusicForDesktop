@@ -1,5 +1,6 @@
 package gomusic
 
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,13 +13,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.WindowDraggableArea
 
 val FONT_NAMES = listOf("默认", "无衬线", "衬线", "等宽", "粗体")
 
@@ -29,9 +31,13 @@ fun floatFontFamily(idx: Int): FontFamily = when (idx) {
     else -> FontFamily.Default
 }
 
-/** 悬浮歌词窗内容：透明底、可拖动，显示当前行与下一行 */
+/**
+ * 悬浮歌词窗内容：透明底、可拖动（拖动交给外层改窗口位置），
+ * 显示当前行与下一行。
+ * [onDrag] 回调的是 dp 位移。
+ */
 @Composable
-fun FloatLyricContent(state: AppState) {
+fun FloatLyricContent(state: AppState, onDrag: (Float, Float) -> Unit) {
     val (cur, next) = state.floatLines()
     val fam = floatFontFamily(state.floatFont)
     val weight = if (state.floatFont == 4) FontWeight.Bold else FontWeight.Normal
@@ -43,16 +49,22 @@ fun FloatLyricContent(state: AppState) {
             textAlign = TextAlign.Center,
         )
     }
-    WindowDraggableArea {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                OutlineText(cur, base, state.floatColor, state.floatStrokeColor, state.floatStroke)
-                if (next.isNotBlank()) {
-                    OutlineText(
-                        next, base.copy(fontSize = state.floatSize.sp * 0.82f),
-                        state.floatColor.copy(alpha = 0.65f), state.floatStrokeColor, state.floatStroke * 0.7f,
-                    )
-                }
+    val density = LocalDensity.current
+    Box(
+        Modifier.fillMaxSize().pointerInput(Unit) {
+            detectDragGestures { _, drag ->
+                onDrag(drag.x / density.density, drag.y / density.density)
+            }
+        },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            OutlineText(cur, base, state.floatColor, state.floatStrokeColor, state.floatStroke)
+            if (next.isNotBlank()) {
+                OutlineText(
+                    next, base.copy(fontSize = state.floatSize.sp * 0.82f),
+                    state.floatColor.copy(alpha = 0.65f), state.floatStrokeColor, state.floatStroke * 0.7f,
+                )
             }
         }
     }

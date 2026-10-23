@@ -68,7 +68,10 @@ fun main() = application {
             resizable = false,
             onCloseRequest = { state.setFloatOn(false) },
         ) {
-            FloatLyricContent(state)
+            FloatLyricContent(state) { dx, dy ->
+                val p = fs.position
+                fs.position = WindowPosition.Absolute(p.x + dx.dp, p.y + dy.dp)
+            }
         }
     }
 }
