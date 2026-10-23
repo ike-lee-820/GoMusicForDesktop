@@ -109,7 +109,7 @@ class AppState {
     var floatSize by mutableStateOf(Prefs.floatSize); private set
     var floatFont by mutableStateOf(Prefs.floatFont); private set
 
-    fun setFloatOn(v: Boolean) {
+    fun chooseFloatOn(v: Boolean) {
         floatOn = v
         Prefs.floatOn = v
     }

@@ -66,7 +66,7 @@ fun main() = application {
             transparent = true,
             alwaysOnTop = true,
             resizable = false,
-            onCloseRequest = { state.setFloatOn(false) },
+            onCloseRequest = { state.chooseFloatOn(false) },
         ) {
             FloatLyricContent(state) { dx, dy ->
                 val p = fs.position

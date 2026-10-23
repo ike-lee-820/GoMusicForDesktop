@@ -697,7 +697,7 @@ fun SettingsDialog(state: AppState) {
             Spacer(Modifier.height(8.dp))
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceHiColor)
-                    .clickable { state.setFloatOn(!state.floatOn) }.padding(horizontal = 12.dp, vertical = 10.dp),
+                    .clickable { state.chooseFloatOn(!state.floatOn) }.padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
@@ -706,7 +706,7 @@ fun SettingsDialog(state: AppState) {
                 }
                 Switch(
                     checked = state.floatOn,
-                    onCheckedChange = { state.setFloatOn(it) },
+                    onCheckedChange = { state.chooseFloatOn(it) },
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = BgColor,
                         checkedTrackColor = MaterialTheme.colorScheme.primary,
