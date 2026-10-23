@@ -101,40 +101,6 @@ class AppState {
     var toastMsg by mutableStateOf<String?>(null); private set
     private var toastJob: kotlinx.coroutines.Job? = null
 
-    // ---------- 悬浮歌词 ----------
-    var floatOn by mutableStateOf(Prefs.floatOn); private set
-    var floatColor by mutableStateOf(Color(Prefs.floatColor.toULong())); private set
-    var floatStrokeColor by mutableStateOf(Color(Prefs.floatStrokeColor.toULong())); private set
-    var floatStroke by mutableStateOf(Prefs.floatStroke); private set
-    var floatSize by mutableStateOf(Prefs.floatSize); private set
-    var floatFont by mutableStateOf(Prefs.floatFont); private set
-
-    fun chooseFloatOn(v: Boolean) {
-        floatOn = v
-        Prefs.floatOn = v
-    }
-
-    fun updateFloat(
-        color: Color? = null,
-        strokeColor: Color? = null,
-        stroke: Float? = null,
-        size: Float? = null,
-        font: Int? = null,
-    ) {
-        color?.let { floatColor = it; Prefs.floatColor = it.argbLong() }
-        strokeColor?.let { floatStrokeColor = it; Prefs.floatStrokeColor = it.argbLong() }
-        stroke?.let { floatStroke = it; Prefs.floatStroke = it }
-        size?.let { floatSize = it; Prefs.floatSize = it }
-        font?.let { floatFont = it; Prefs.floatFont = it }
-    }
-
-    /** 悬浮窗显示的当前行与下一行 */
-    fun floatLines(): Pair<String, String> {
-        val l = lyric
-        val i = lyricIndex
-        return (l.getOrNull(i)?.text ?: "") to (l.getOrNull(i + 1)?.text ?: "")
-    }
-
     // ---------- 播放 ----------
     var queue by mutableStateOf<List<Song>>(emptyList()); private set
     var curIndex by mutableStateOf(0); private set

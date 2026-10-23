@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Slider
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -692,65 +691,6 @@ fun SettingsDialog(state: AppState) {
             Spacer(Modifier.height(8.dp))
             GoButton("重新连接") { state.load() }
             Spacer(Modifier.height(16.dp))
-            // ---------- 悬浮歌词 ----------
-            Txt("悬浮歌词", 15, weight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceHiColor)
-                    .clickable { state.chooseFloatOn(!state.floatOn) }.padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Txt("显示悬浮歌词", 14, weight = FontWeight.Medium)
-                    Txt(if (state.floatOn) "已开启，窗口可拖动" else "关闭", 12, color = MutedColor)
-                }
-                Switch(
-                    checked = state.floatOn,
-                    onCheckedChange = { state.chooseFloatOn(it) },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = BgColor,
-                        checkedTrackColor = MaterialTheme.colorScheme.primary,
-                        uncheckedThumbColor = MutedColor,
-                        uncheckedTrackColor = SurfaceColor,
-                    ),
-                )
-            }
-            if (state.floatOn) {
-                Spacer(Modifier.height(12.dp))
-                Txt("文字颜色", 13, color = MutedColor)
-                Spacer(Modifier.height(6.dp))
-                FloatColorRow(state.floatColor) { state.updateFloat(color = it) }
-                Spacer(Modifier.height(10.dp))
-                Txt("描边颜色", 13, color = MutedColor)
-                Spacer(Modifier.height(6.dp))
-                FloatColorRow(state.floatStrokeColor) { state.updateFloat(strokeColor = it) }
-                Spacer(Modifier.height(10.dp))
-                Txt("字号 ${state.floatSize.toInt()} sp", 13, color = MutedColor)
-                Slider(
-                    value = state.floatSize,
-                    onValueChange = { state.updateFloat(size = it) },
-                    valueRange = 14f..40f,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(6.dp))
-                Txt("描边 ${state.floatStroke.toInt()}", 13, color = MutedColor)
-                Slider(
-                    value = state.floatStroke,
-                    onValueChange = { state.updateFloat(stroke = it) },
-                    valueRange = 0f..10f,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(6.dp))
-                Txt("字体", 13, color = MutedColor)
-                Spacer(Modifier.height(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FONT_NAMES.forEachIndexed { i, n ->
-                        GoButton(n, primary = state.floatFont == i) { state.updateFloat(font = i) }
-                    }
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-
             Txt("播放内核", 15, weight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             Txt("当前：${state.engineName}（FFmpeg 解码 + OpenAL 输出；不可用时回退内置 MP3 解码）", 13, color = MutedColor)

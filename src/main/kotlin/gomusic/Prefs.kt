@@ -37,14 +37,34 @@ data class PrefsFile(
     val playMode: Int = 0,
     val speed: Float = 1f,
     val themeColor: Long? = null,
-    val floatOn: Boolean = false,
-    val floatColor: Long = 0xFFFFFFFF,
-    val floatStrokeColor: Long = 0xCC000000,
-    val floatStroke: Float = 3f,
-    val floatSize: Float = 18f,
-    val floatFont: Int = 0,
-    val floatX: Float = 120f,
-    val floatY: Float = 80f,
+),
+    val cover: String? = null,
+)
+
+/** 一条下载记录：音频 + 封面 + 歌词 + 信息文件 */
+@Serializable
+data class DownloadRecord(
+    val ssid: String,
+    val title: String = "",
+    val artist: String = "",
+    val album: String = "",
+    val quality: String = "",
+    val audio: String = "",
+    val cover: String = "",
+    val lyric: String = "",
+    val meta: String = "",
+    val time: Long = 0L,
+)
+
+@Serializable
+data class PrefsFile(
+    val playCounts: Map<String, Int> = emptyMap(),
+    val playlists: List<Playlist> = emptyList(),
+    val downloads: List<DownloadRecord> = emptyList(),
+    val quality: String = "normal",
+    val playMode: Int = 0,
+    val speed: Float = 1f,
+    val themeColor: Long? = null,
 )
 
 /** 配置与本地索引，存在 ~/.gomusic/ 下 */
@@ -100,37 +120,4 @@ object Prefs {
         get() = data.themeColor
         set(v) { data = data.copy(themeColor = v); save() }
 
-    // ---------- 悬浮歌词 ----------
-    var floatOn: Boolean
-        get() = data.floatOn
-        set(v) { data = data.copy(floatOn = v); save() }
-
-    var floatColor: Long
-        get() = data.floatColor
-        set(v) { data = data.copy(floatColor = v); save() }
-
-    var floatStrokeColor: Long
-        get() = data.floatStrokeColor
-        set(v) { data = data.copy(floatStrokeColor = v); save() }
-
-    var floatStroke: Float
-        get() = data.floatStroke
-        set(v) { data = data.copy(floatStroke = v); save() }
-
-    var floatSize: Float
-        get() = data.floatSize
-        set(v) { data = data.copy(floatSize = v); save() }
-
-    /** 0 默认 1 无衬线 2 衬线 3 等宽 4 粗体 */
-    var floatFont: Int
-        get() = data.floatFont
-        set(v) { data = data.copy(floatFont = v); save() }
-
-    var floatX: Float
-        get() = data.floatX
-        set(v) { data = data.copy(floatX = v); save() }
-
-    var floatY: Float
-        get() = data.floatY
-        set(v) { data = data.copy(floatY = v); save() }
 }

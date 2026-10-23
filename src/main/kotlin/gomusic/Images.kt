@@ -5,6 +5,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import org.jetbrains.compose.resources.decodeToImageBitmap
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import javax.imageio.ImageIO
 
@@ -13,11 +14,43 @@ data class CoverImg(val bmp: ImageBitmap, val color: Color?)
 /** 封面加载：Skia 解码（webp / jpeg / png 通吃），ImageIO（含 webp 插件）负责取色 */
 object Images {
     private val cache = ConcurrentHashMap<String, CoverImg?>()
+    private val dir: File = File(Prefs.dir, "imgcache").apply { mkdirs() }
+    private const val MAX_BYTES = 300L * 1024 * 1024
+
+    private fun fileOf(url: String): File {
+        val md = MessageDigest.getInstance("MD5").digest(url.toByteArray())
+        return File(dir, md.joinToString("") { "%02x".format(it) })
+    }
 
     private fun readBytes(ref: String): ByteArray? = when {
         ref.startsWith("data:") -> decodeDataUri(ref)
-        ref.startsWith("http") -> Api.bytes(ref)
+        ref.startsWith("http") -> {
+            val f = fileOf(ref)
+            // 先读缓存文件，没有再走网络并存下来
+            runCatching { if (f.exists() && f.length() > 0) f.readBytes() else null }?.getOrNull()
+                ?: Api.bytes(ref)?.also { b ->
+                    runCatching {
+                        val tmp = File(dir, f.name + ".tmp")
+                        tmp.writeBytes(b)
+                        if (tmp.length() > 0) tmp.renameTo(f) else tmp.delete()
+                        trim()
+                    }
+                }
+        }
         else -> runCatching { File(ref).takeIf { it.exists() }?.readBytes() }.getOrNull()
+    }
+
+    private fun trim() {
+        runCatching {
+            val files = dir.listFiles() ?: return
+            var total = files.sumOf { it.length() }
+            if (total <= MAX_BYTES) return
+            files.sortedBy { it.lastModified() }.forEach {
+                if (total <= MAX_BYTES) return
+                val len = it.length()
+                if (it.delete()) total -= len
+            }
+        }
     }
 
     /** 阻塞加载，请在 IO 线程调用 */
@@ -30,7 +63,7 @@ object Images {
             bmp = runCatching { bytes.decodeToImageBitmap() }.getOrNull() ?: return null,
             color = runCatching { dominant(bytes) }.getOrNull(),
         )
-        if (cache.size > 120) cache.clear()
+        if (cache.size > 200) cache.clear()
         cache[key] = img
         return img
     }
