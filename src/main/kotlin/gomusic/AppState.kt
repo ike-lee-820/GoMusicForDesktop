@@ -83,6 +83,32 @@ class AppState {
     var dlStatus by mutableStateOf<DlStatus?>(null); private set
 
     var playlists by mutableStateOf(Prefs.playlists); private set
+    var showHistory by mutableStateOf(false)
+    var history by mutableStateOf(Prefs.history); private set
+
+    fun pushHistory(ssid: String) {
+        val l = (listOf(ssid) + history.filter { it != ssid }).take(60)
+        history = l
+        Prefs.history = l
+    }
+
+    fun removeHistory(ssid: String) {
+        val l = history.filter { it != ssid }
+        history = l
+        Prefs.history = l
+    }
+
+    fun clearHistory() {
+        history = emptyList()
+        Prefs.history = emptyList()
+    }
+    val historySongs: List<Song> get() {
+        val m = songs.associateBy { it.ssid }
+        val dl = downloads.associateBy { it.ssid }
+        return history.mapNotNull { id ->
+            m[id] ?: dl[id]?.let { Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null }) }
+        }
+    }
     var counts by mutableStateOf(Prefs.playCounts); private set
 
     // ---------- 设置 ----------
@@ -244,6 +270,7 @@ class AppState {
         lyric = emptyList()
         updateCover(song)
         Prefs.bump(song.ssid)
+        pushHistory(song.ssid)
         counts = Prefs.playCounts
         scope.launch {
             val rec = downloads.firstOrNull { it.ssid == song.ssid }

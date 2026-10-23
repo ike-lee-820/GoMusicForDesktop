@@ -31,6 +31,7 @@ data class DownloadRecord(
 @Serializable
 data class PrefsFile(
     val playCounts: Map<String, Int> = emptyMap(),
+    val history: List<String> = emptyList(),
     val playlists: List<Playlist> = emptyList(),
     val downloads: List<DownloadRecord> = emptyList(),
     val quality: String = "normal",
@@ -59,6 +60,7 @@ data class DownloadRecord(
 @Serializable
 data class PrefsFile(
     val playCounts: Map<String, Int> = emptyMap(),
+    val history: List<String> = emptyList(),
     val playlists: List<Playlist> = emptyList(),
     val downloads: List<DownloadRecord> = emptyList(),
     val quality: String = "normal",
@@ -94,6 +96,11 @@ object Prefs {
         data = data.copy(playCounts = m)
         save()
     }
+
+    /** 播放历史（最近在前） */
+    var history: List<String>
+        get() = data.history
+        set(v) { data = data.copy(history = v.take(60)); save() }
 
     var playlists: List<Playlist>
         get() = data.playlists

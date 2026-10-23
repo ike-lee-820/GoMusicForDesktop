@@ -24,6 +24,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -81,6 +84,7 @@ fun App(state: AppState) {
             }
             ToastHost(state.toastMsg)
             if (state.showSettings) SettingsDialog(state)
+            if (state.showHistory) HistoryDialog(state)
         }
     }
 }
@@ -168,6 +172,94 @@ fun DownloadBar(d: DlStatus) {
 }
 
 @Composable
+/** 歌曲栏顶部：最近播放，点「全部」进入历史页 */
+@Composable
+fun HistoryRow(state: AppState) {
+    val list = state.historySongs
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Txt("历史", 15, Modifier.weight(1f), FontWeight.SemiBold)
+            Txt("全部", 12, Modifier.clickable { state.showHistory = true }, color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(12.dp))
+            Txt("清空", 12, Modifier.clickable { state.clearHistory() }, color = MutedColor)
+            Spacer(Modifier.width(12.dp))
+        }
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(list.take(20), key = { it.ssid }) { s ->
+                Column(Modifier.width(84.dp).clickable {
+                    state.playSongs(list, list.indexOf(s))
+                }) {
+                    Cover(s.coverUrl, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
+                    Spacer(Modifier.height(6.dp))
+                    Txt(s.title, 12, maxLines = 1)
+                    Txt(s.artist, 11, color = MutedColor, maxLines = 1)
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+    }
+}
+
+/** 历史页：全部播放记录，可单条删除或清空 */
+@Composable
+fun HistoryDialog(state: AppState) {
+    val list = state.historySongs
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f))
+            .clickable { state.showHistory = false },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.widthIn(max = 620.dp).fillMaxWidth(0.9f).heightIn(max = 620.dp)
+                .clip(RoundedCornerShape(20.dp)).background(SurfaceColor)
+                .clickable(enabled = false) {},
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Txt("播放历史", 16, Modifier.weight(1f), FontWeight.SemiBold)
+                if (list.isNotEmpty()) {
+                    Txt("清空", 12, Modifier.clickable { state.clearHistory() }, color = MutedColor)
+                    Spacer(Modifier.width(12.dp))
+                }
+                IconBtn(Icons.Outlined.Close, "关闭") { state.showHistory = false }
+            }
+            if (list.isEmpty()) {
+                Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
+                    Txt("还没有播放记录", 14, color = MutedColor)
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
+                    itemsIndexed(list, key = { _, s -> s.ssid }) { i, s ->
+                        Row(
+                            Modifier.fillMaxWidth().height(64.dp)
+                                .clickable { state.playSongs(list, i) }
+                                .padding(start = 16.dp, end = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Txt("${i + 1}", 12, Modifier.width(28.dp), color = MutedColor)
+                            Cover(s.coverUrl, Modifier.size(44.dp), 8.dp)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Txt(s.title, 15, weight = FontWeight.Medium, maxLines = 1)
+                                Txt(s.artist, 12, color = MutedColor, maxLines = 1)
+                            }
+                            IconBtn(Icons.Outlined.Delete, "删除这条记录") { state.removeHistory(s.ssid) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
     val q = state.query.trim()
     when {
@@ -187,7 +279,10 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
         else -> when (state.tab) {
             0 -> {
                 val list = state.ranked().filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
-                SongList(state, list, onPick)
+                Column(Modifier.fillMaxSize()) {
+                    if (q.isEmpty() && state.historySongs.isNotEmpty()) HistoryRow(state)
+                    Box(Modifier.weight(1f)) { SongList(state, list, onPick) }
+                }
             }
             1 -> {
                 val groups = state.albumGroups().filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
