@@ -127,9 +127,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="v1.0.0"
+          # 版本号从 build.gradle.kts 读，不再写死，避免和实际版本对不上
+          VER=$(grep -m1 '^version = ' build.gradle.kts | sed -E 's/version = "(.*)"/\1/')
+          if [ -z "$VER" ]; then VER="1.0.0"; fi
+          TAG="v$VER"
+          echo "release tag = $TAG"
+          gh --version
+          # 创建发布：已存在就跳过（并发/重跑时不会因已存在而失败）
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "GoMusic Desktop $TAG" --notes "Auto build: Windows / Linux / macOS (x64 and ARM64)"
+            gh release create "$TAG" \
+              --title "GoMusic Desktop $TAG" \
+              --notes "自动构建：Windows / Linux / macOS（x64 与 ARM64）" || \
+              echo "release create 返回非零，继续尝试上传"
           fi
           shopt -s nullglob
           files=(out/*.zip)
@@ -138,6 +147,16 @@ jobs:
             ls -R out || true
             exit 1
           fi
+          # 逐个上传并重试：刚创建的发布会有短暂的索引延迟，直接传可能失败
           for f in "${files[@]}"; do
-            gh release upload "$TAG" "$f" --clobber
+            echo "uploading $f"
+            for i in 1 2 3; do
+              if gh release upload "$TAG" "$f" --clobber; then
+                echo "  ok ($i)"
+                break
+              fi
+              echo "  第 $i 次失败，5 秒后重试"
+              sleep 5
+              if [ "$i" = "3" ]; then exit 1; fi
+            done
           done
