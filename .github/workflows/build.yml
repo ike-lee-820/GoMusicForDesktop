@@ -117,6 +117,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: out
@@ -126,7 +127,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          {
           set -uo pipefail
+          echo "== token 权限诊断 =="
+          curl -sS -o /dev/null -D - -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}" | grep -i "x-oauth-scopes" || echo "(no scope header)"
+          echo "== 读取仓库（判断 contents 权限）=="
+          curl -sS -o /dev/null -w "GET repo -> HTTP %{http_code}\n" -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}"
+          echo "== 尝试写一个文件验证 contents:write =="
+          curl -sS -o /dev/null -w "PUT file -> HTTP %{http_code}\n" -X PUT \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/ci/_perm_test.txt" \
+            -d '{"message":"perm test","content":"dGVzdA=="}'
           VER=$(grep -m1 '^version = ' build.gradle.kts | sed -E 's/version = "(.*)"/\1/')
           if [ -z "$VER" ]; then VER="1.0.0"; fi
           TAG="v$VER"
@@ -188,3 +201,17 @@ except Exception: print('')")
             if [ "$ok" != "1" ]; then echo "  FAILED $NAME"; fail=1; fi
           done
           exit $fail
+          }
+      - name: Publish release log
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          git config user.name ci-bot
+          git config user.email ci-bot@example.com
+          git checkout -B ci-logs-release
+          mkdir -p ci
+          cp release.log ci/release.log 2>/dev/null || echo "no release.log" > ci/release.log
+          git add -f ci/release.log
+          git commit -m "ci release log $(date -u +%FT%TZ)" || echo none
+          git push -f origin ci-logs-release
