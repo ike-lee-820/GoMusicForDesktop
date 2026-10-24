@@ -29,7 +29,7 @@ const val SRC_NETEASE = "netease"
 const val NM_PREFIX = "nm"
 
 /** 当前版本号（Updater.current() 读不到 version.txt 时的兜底） */
-const val APP_VERSION = "1.3.0"
+const val APP_VERSION = "1.6.0"
 
 /** 网易云可选音质档位（从低到高） */
 val NM_LEVELS = listOf(

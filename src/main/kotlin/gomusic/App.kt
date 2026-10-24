@@ -98,13 +98,16 @@ fun App(state: AppState) {
             // 启动时静默检查一次更新，有新版就弹窗
             LaunchedEffect(Unit) { state.autoCheckUpdate() }
         Box(Modifier.fillMaxSize().background(BgColor)) {
-            Row(Modifier.fillMaxSize()) {
-                // 四个标签移到左侧侧栏（手机端是底部导航栏）
-                SideRail(state)
-                Box(Modifier.fillMaxHeight().width(1.dp).background(SurfaceHiColor))
-                LeftPane(state, Modifier.weight(1.15f).fillMaxHeight().widthIn(min = 420.dp))
-                Box(Modifier.fillMaxHeight().width(1.dp).background(SurfaceHiColor))
-                RightPane(state, Modifier.weight(1f).fillMaxHeight().widthIn(min = 380.dp))
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.weight(1f).fillMaxWidth()) {
+                    // 标签移到左侧侧栏（手机端是底部导航栏）
+                    SideRail(state)
+                    Box(Modifier.fillMaxHeight().width(1.dp).background(SurfaceHiColor))
+                    // 右侧不再放歌曲栏，主内容占满剩余宽度
+                    LeftPane(state, Modifier.weight(1f).fillMaxHeight())
+                }
+                // 底部悬浮正在播放栏：点一下直接进全屏播放器
+                if (state.currentSong != null) NowPlayingBar(state)
             }
             ToastHost(state.toastMsg)
             if (state.showSettings) {
@@ -132,11 +135,11 @@ fun App(state: AppState) {
 /** 左侧侧栏：歌曲 / 专辑 / 歌手 / 歌单 + 设置，与手机端底部四个标签对应 */
 @Composable
 fun SideRail(state: AppState) {
-    // 顺序与手机端底部一致，首页在最中间
+    // 首页放在最顶端，也是默认进入的页面
     val items = listOf(
+        TAB_HOME to ("首页" to Icons.Outlined.Home),
         TAB_SONGS to ("歌曲" to Icons.Outlined.MusicNote),
         TAB_ALBUMS to ("专辑" to Icons.Outlined.Album),
-        TAB_HOME to ("首页" to Icons.Outlined.Home),
         TAB_ARTISTS to ("歌手" to Icons.Outlined.Person),
         TAB_PLAYLISTS to ("歌单" to Icons.Outlined.PlaylistPlay),
     )
@@ -215,8 +218,12 @@ fun SideRail(state: AppState) {
 @Composable
 fun LeftPane(state: AppState, modifier: Modifier) {
     var pick by remember { mutableStateOf<Pair<List<String>, String>?>(null) }
-    val titles = listOf("歌曲", "专辑", "歌手", "歌单")
-    val hints = listOf("搜索歌名或歌手", "搜索专辑名或歌手", "搜索歌手", "搜索歌单")
+    // 顺序必须与 TAB_ 常量一致：0 歌曲 / 1 专辑 / 2 首页 / 3 歌手 / 4 歌单。
+    // 之前这里只给了 4 项，切到歌单（下标 4）就下标越界
+    val titles = listOf("歌曲", "专辑", "首页", "歌手", "歌单")
+    val hints = listOf("搜索歌名或歌手", "搜索专辑名或歌手", "搜索歌名或歌手", "搜索歌手", "搜索歌单")
+    val titleOf = { t: Int -> titles.getOrElse(t) { "歌曲" } }
+    val hintOf = { t: Int -> hints.getOrElse(t) { hints[0] } }
     Column(modifier.background(BgColor)) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -229,14 +236,14 @@ fun LeftPane(state: AppState, modifier: Modifier) {
                         is Page.Album -> (state.page as Page.Album).name.ifBlank { "未知专辑" }
                         is Page.Artist -> (state.page as Page.Artist).name.ifBlank { "未知歌手" }
                         is Page.PlaylistPage -> state.playlists.firstOrNull { it.id == (state.page as Page.PlaylistPage).id }?.name ?: "歌单"
-                        else -> titles[state.tab]
+                        else -> titleOf(state.tab)
                     },
                     20, Modifier.weight(1f), FontWeight.Bold,
                 )
                 IconBtn(Icons.Outlined.Settings, "设置") { state.showSettings = true }
             }
             Spacer(Modifier.height(8.dp))
-            if (state.page == null) SearchField(state.query, { state.query = it }, hints[state.tab])
+            if (state.page == null) SearchField(state.query, { state.query = it }, hintOf(state.tab))
             if (state.offline) OfflineBar(state)
             state.dlStatus?.let { DownloadBar(it) }
         }
@@ -939,6 +946,69 @@ private fun copyToClipboard(text: String) {
 }
 
 // =====================================================================
+// 底部悬浮「正在播放」栏
+// =====================================================================
+
+/**
+ * 底部悬浮正在播放栏。
+ *
+ * 原来右栏是固定的「正在播放 + 歌词/队列」，占掉一大块宽度。
+ * 现在改成贴在窗口底部的一条，主内容可以用满整个宽度；
+ * 点整条直接进入全屏播放器（横版三栏：封面 / 控制区 / 歌词）。
+ */
+@Composable
+fun NowPlayingBar(state: AppState) {
+    val song = state.currentSong ?: return
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().height(64.dp)
+            .background(SurfaceColor)
+            .clickable { state.openFullPlayer() }
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 左侧：小封面
+        Cover(song.coverUrl, Modifier.size(44.dp), 128, 8.dp)
+        Spacer(Modifier.width(12.dp))
+        // 中间：歌名 / 歌手·专辑
+        Column(Modifier.weight(1f)) {
+            Txt(song.title, 14, weight = FontWeight.Medium, maxLines = 1)
+            Spacer(Modifier.height(2.dp))
+            Txt(
+                listOf(song.artist, song.album).filter { it.isNotBlank() }.joinToString(" · ")
+                    .ifBlank { "GoMusic 桌面版" },
+                12, color = MutedColor, maxLines = 1,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        // 右侧：播放控制（点这些按钮不进全屏）
+        IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 30.dp) { state.prev() }
+        Spacer(Modifier.width(4.dp))
+        Box(
+            Modifier.size(36.dp).clip(androidx.compose.foundation.shape.CircleShape).background(cs.primary)
+                .clickable { state.toggle() },
+            contentAlignment = Alignment.Center,
+        ) {
+            androidx.compose.material3.Icon(
+                if (state.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                "播放/暂停", tint = cs.onPrimary, modifier = Modifier.size(20.dp),
+            )
+        }
+        Spacer(Modifier.width(4.dp))
+        IconBtn(Icons.Outlined.SkipNext, "下一首", size = 30.dp) { state.next() }
+        Spacer(Modifier.width(8.dp))
+        // 进度条：给固定宽度，避免和按钮挤在一起
+        Box(Modifier.width(220.dp)) {
+            SimpleSeekBar(state.positionMs, state.durationMs) { state.seek(it) }
+        }
+    }
+}
+
+// =====================================================================
+// 右栏（已改为底部悬浮栏，保留实现以便需要时复用）
+// =====================================================================
+
+// =====================================================================
 // 右栏：正在播放
 // =====================================================================
 
@@ -1487,12 +1557,18 @@ fun SettingsDialog(state: AppState) {
                         .padding(horizontal = 10.dp, vertical = 3.dp),
                 ) { Txt(state.fontWght.toString(), 13, color = MaterialTheme.colorScheme.primary) }
             }
+            // steps 用 0（连续），取值在 onValueChange 里按 10 对齐。
+            // 之前给 steps 传了 64，某些 Compose 版本在滑块内部按步长建数组
+            // 会越界（表现就是打开设置就崩）
             Slider(
-                value = state.fontWght.toFloat(),
-                // 拖动过程中就写入，松手或退出都不会丢
-                onValueChange = { state.chooseFontWght(it.roundToInt()) },
+                value = state.fontWght.toFloat().coerceIn(WGHT_MIN.toFloat(), WGHT_MAX.toFloat()),
+                // 拖动过程中就写入，松手或退出都不会丢；按 10 对齐
+                onValueChange = {
+                    val v = ((it.roundToInt() + 5) / 10) * 10
+                    state.chooseFontWght(v)
+                },
                 valueRange = WGHT_MIN.toFloat()..WGHT_MAX.toFloat(),
-                steps = (WGHT_MAX - WGHT_MIN) / 10 - 1,
+                steps = 0,
                 modifier = Modifier.fillMaxWidth(),
             )
             Txt(
@@ -1609,7 +1685,7 @@ fun SettingsDialog(state: AppState) {
                 }
             }
             Spacer(Modifier.height(12.dp))
-            Txt("GoMusic 桌面版 1.0.0 · 配置与索引：${Prefs.dir.absolutePath}", 12, color = MutedColor)
+            Txt("GoMusic 桌面版 ${Updater.current()} · 配置与索引：${Prefs.dir.absolutePath}", 12, color = MutedColor)
         }
     }
 }

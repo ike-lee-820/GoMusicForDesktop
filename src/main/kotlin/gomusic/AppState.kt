@@ -712,7 +712,7 @@ class AppState {
     val primary: Color get() = fixedTheme ?: coverColor ?: DefaultPrimary
 
     // ---------- 界面 ----------
-    var tab by mutableStateOf(0)
+    var tab by mutableStateOf(TAB_HOME)
     var query by mutableStateOf("")
     var page by mutableStateOf<Page?>(null)
     var showSettings by mutableStateOf(false)
