@@ -43,3 +43,4 @@
 - `1.3.5` 小迭代：修编译（async / launch / CircularProgressIndicator / LocalDensity 导入，withIo 需协程作用域）
 - `1.3.6` 小迭代：全屏播放器歌词改回竖排滚动，与手机横屏一致
 - `1.3.7` 小迭代：修编译（LocalDensity 包路径、NmUi 缺 launch、去重复 import）；歌词改为微微旋转
+- `1.3.8` 小迭代：删掉不再使用的 WheelLyrics / CircleLyrics 及其 LocalDensity 依赖；补 mutableIntStateOf 导入
