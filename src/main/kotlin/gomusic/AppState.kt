@@ -15,6 +15,11 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 import kotlin.math.abs
 
+/** 播放模式 */
+private const val MODE_LIST_LOOP = 0
+private const val MODE_SHUFFLE = 1
+private const val MODE_REPEAT_ONE = 2
+
 val DefaultPrimary = Color(0xFFD0BCFF)
 
 /** 网易云搜索每次请求的条数（翻页步长） */
@@ -698,6 +703,10 @@ class AppState {
     var quality by mutableStateOf(Prefs.quality); private set
     var playMode by mutableStateOf(Prefs.playMode); private set
     var speed by mutableStateOf(Prefs.speed); private set
+    /** 全局字体：0 系统 / 1 思源宋体 */
+    var fontKind by mutableStateOf(Prefs.fontKind); private set
+    /** 可变字体的字重（wght），250~900，默认 450 */
+    var fontWght by mutableStateOf(Prefs.fontWght); private set
     var fixedTheme by mutableStateOf(Prefs.themeColor?.let { Color(it.toULong()) }); private set
     var coverColor by mutableStateOf<Color?>(null); private set
     val primary: Color get() = fixedTheme ?: coverColor ?: DefaultPrimary
@@ -1037,9 +1046,15 @@ class AppState {
         player.seek(ms)
     }
 
-    fun next() = step(1)
+    fun next() {
+        // 单曲循环：不跳列表，直接把这一首从头重播
+        if (playMode == MODE_REPEAT_ONE) { startCurrent(0); return }
+        step(1)
+    }
 
     fun prev() {
+        // 单曲循环：同上，从头重播这一首
+        if (playMode == MODE_REPEAT_ONE) { startCurrent(0); return }
         if (positionMs > 3000) {
             seek(0)
             return
@@ -1051,7 +1066,7 @@ class AppState {
         val q = queue
         if (q.isEmpty()) return
         val i = when (playMode) {
-            1 -> q.indices.random()
+            MODE_SHUFFLE -> q.indices.random()
             else -> (curIndex + delta + q.size) % q.size
         }
         curIndex = i
@@ -1060,7 +1075,7 @@ class AppState {
 
     private fun onEnded() {
         when (playMode) {
-            2 -> startCurrent(0)
+            MODE_REPEAT_ONE -> startCurrent(0)
             else -> step(1)
         }
     }
@@ -1069,6 +1084,21 @@ class AppState {
         playMode = (playMode + 1) % 3
         Prefs.playMode = playMode
         toast(listOf("列表循环", "随机播放", "单曲循环")[playMode])
+    }
+
+    /** 切换全局字体（0 系统 / 1 思源宋体） */
+    fun chooseFontKind(k: Int) {
+        fontKind = k
+        Prefs.fontKind = k
+    }
+
+    /**
+     * 调整可变字体的字重（250~900）。拖动滑块时每次都落盘。
+     */
+    fun chooseFontWght(w: Int) {
+        val v = w.coerceIn(250, 900)
+        fontWght = v
+        Prefs.fontWght = v
     }
 
     fun chooseSpeed(v: Float) {

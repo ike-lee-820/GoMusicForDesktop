@@ -83,10 +83,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.HighQuality
+import androidx.compose.material3.Slider
 
 @Composable
 fun App(state: AppState) {
-    GoTheme(state.primary) {
+    GoTheme(state.primary, rememberAppFont(state.fontKind, state.fontWght)) {
         // 简繁转换：设置一改，界面与文字全部跟着变
         androidx.compose.runtime.CompositionLocalProvider(
             LocalZhMode provides state.zhConvert,
@@ -1090,16 +1093,47 @@ fun QueueView(state: AppState) {
 }
 
 @Composable
-fun QualityMenu(state: AppState) {
+/**
+ * 音质菜单。
+ * [tint] 为 null 时用文字按钮（设置页）；传颜色时用图标按钮（播放器控制区）。
+ */
+@Composable
+fun QualityMenu(state: AppState, tint: Color? = null) {
     var open by remember { mutableStateOf(false) }
     Box {
-        GoButton(qualityLabel(state.quality)) { open = true }
+        if (tint == null) {
+            GoButton(qualityLabel(state.quality)) { open = true }
+        } else {
+            IconBtn(Icons.Outlined.HighQuality, "音质", tint = tint) { open = true }
+        }
         androidx.compose.material3.DropdownMenu(open, { open = false }, Modifier.background(SurfaceColor)) {
             val list = if (state.qualities.isEmpty()) listOf("lossless", "high", "normal") else state.qualities.sortedBy { Api.rank(it) }
             list.forEach { q ->
                 androidx.compose.material3.DropdownMenuItem(
                     text = { Txt(qualityLabel(q), 14) },
                     onClick = { open = false; state.chooseQuality(q) },
+                )
+            }
+        }
+    }
+}
+
+/** 倍速菜单：控制区用图标按钮，设置页也可复用 */
+@Composable
+fun SpeedMenu(state: AppState, tint: Color? = null) {
+    var open by remember { mutableStateOf(false) }
+    val speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+    Box {
+        if (tint == null) {
+            GoButton("${state.speed}×") { open = true }
+        } else {
+            IconBtn(Icons.Outlined.Speed, "倍速", tint = tint) { open = true }
+        }
+        androidx.compose.material3.DropdownMenu(open, { open = false }, Modifier.background(SurfaceColor)) {
+            speeds.forEach { v ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Txt("${v}×", 14) },
+                    onClick = { open = false; state.chooseSpeed(v) },
                 )
             }
         }
@@ -1124,10 +1158,11 @@ private fun rememberCoverBitmap(ref: String?, size: Int = 256): androidx.compose
 }
 
 /**
- * 全屏播放器（桌面端 / 横屏）：
- * 背景是模糊放大的专辑封面，左半边是播放器区
- * （大封面 → 歌手 → 专辑名 → 单色进度条 → 控制按钮），
- * 右半边是中心旋转式歌词。
+ * 全屏播放器（桌面端）：
+ * 背景是模糊放大的专辑封面，分三栏：
+ * - 左：专辑封面 / 歌手 / 歌名 / 专辑名
+ * - 中：控制区（进度条 + 时间 + 播放控制 + 播放方式 + 分享/下载/加入歌单/音质/倍速）
+ * - 右：圆弧歌词（可滑动翻看，停手 3 秒回到当前句）
  */
 @Composable
 fun FullPlayerOverlay(state: AppState) {
@@ -1148,44 +1183,56 @@ fun FullPlayerOverlay(state: AppState) {
                 IconBtn(Icons.Outlined.Close, "关闭") { state.closeFullPlayer() }
                 Spacer(Modifier.width(8.dp))
                 Txt("正在播放", 15, color = Color.White, weight = FontWeight.SemiBold)
-                Spacer(Modifier.weight(1f))
-                IconBtn(Icons.Outlined.Download, "下载", tint = Color.White) { state.download(listOf(song)) }
-                IconBtn(Icons.Outlined.PlaylistAdd, "加入歌单", tint = Color.White) {
-                    state.pickRequest(listOf(song.ssid), song.title, song.coverUrl)
-                }
-                QualityMenu(state)
             }
             Row(Modifier.weight(1f).fillMaxWidth()) {
-                // ---------- 左：专辑大图 + 歌手 / 专辑名，底部是控制区（唯一进度条） ----------
+                // ---------- 左：封面 / 歌手 / 歌名 / 专辑名 ----------
                 BoxWithConstraints(
-                    Modifier.weight(1f).fillMaxHeight(),
+                    Modifier.weight(1f).fillMaxHeight().padding(horizontal = 8.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    val coverSize = minOf(maxWidth * 0.58f, maxHeight * 0.52f).coerceAtLeast(80.dp)
+                    val coverSize = minOf(maxWidth * 0.66f, maxHeight * 0.56f).coerceAtLeast(80.dp)
                     Column(
-                        Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                        Modifier.fillMaxWidth(),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
                         Cover(song.coverUrl, Modifier.size(coverSize), 512, 16.dp)
                         Spacer(Modifier.height(10.dp))
-                        // 第一行小字：歌手
-                        Txt(song.artist, 12, color = Color.White.copy(alpha = 0.72f), maxLines = 1)
+                        // 歌手
+                        Txt(song.artist, 13, color = Color.White.copy(alpha = 0.72f), maxLines = 1)
+                        Spacer(Modifier.height(4.dp))
+                        // 歌名
+                        Text(
+                            song.title,
+                            color = Color.White,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            textAlign = TextAlign.Center,
+                        )
                         Spacer(Modifier.height(2.dp))
-                        // 第二行：专辑名
-                        Txt(song.album.ifBlank { "未知专辑" }, 15, color = Color.White, maxLines = 1)
+                        // 专辑名
+                        Txt(song.album.ifBlank { "未知专辑" }, 12, color = Color.White.copy(alpha = 0.6f), maxLines = 1)
                     }
+                }
+                // ---------- 中：控制区 ----------
+                BoxWithConstraints(
+                    Modifier.weight(0.9f).fillMaxHeight().padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Column(
-                        Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
+                        Modifier.fillMaxWidth(),
                         horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
                     ) {
                         SimpleSeekBar(state.positionMs, state.durationMs) { state.seek(it) }
-                        Row(Modifier.fillMaxWidth(0.92f)) {
+                        Row(Modifier.fillMaxWidth()) {
                             Txt(fmt(state.positionMs), 11, color = Color.White.copy(alpha = 0.6f))
                             Spacer(Modifier.weight(1f))
                             Txt(fmt(state.durationMs), 11, color = Color.White.copy(alpha = 0.6f))
                         }
-                        Spacer(Modifier.height(2.dp))
+                        Spacer(Modifier.height(8.dp))
+                        // 上一首 / 播放 / 下一首
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.Center,
@@ -1206,13 +1253,14 @@ fun FullPlayerOverlay(state: AppState) {
                             Spacer(Modifier.width(4.dp))
                             IconBtn(Icons.Outlined.SkipNext, "下一首", size = 38.dp, tint = Color.White) { state.next() }
                         }
-                        Spacer(Modifier.height(2.dp))
+                        Spacer(Modifier.height(8.dp))
+                        // 播放列表 / 播放方式
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            IconBtn(Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表", size = 32.dp, tint = Color.White) {
+                            IconBtn(Icons.Outlined.PlaylistPlay, "播放列表", size = 32.dp, tint = Color.White) {
                                 state.rightTab = 1
                                 state.closeFullPlayer()
                             }
@@ -1226,18 +1274,36 @@ fun FullPlayerOverlay(state: AppState) {
                                 "播放方式", size = 32.dp, tint = Color.White,
                             ) { state.cycleMode() }
                         }
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(8.dp))
+                        // 下载 / 加入歌单 / 音质 / 倍速（原在右上角，现并入控制区）
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            IconBtn(Icons.Outlined.Download, "下载", size = 30.dp, tint = Color.White) {
+                                state.download(listOf(song))
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            IconBtn(Icons.Outlined.PlaylistAdd, "加入歌单", size = 30.dp, tint = Color.White) {
+                                state.pickRequest(listOf(song.ssid), song.title, song.coverUrl)
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            QualityMenu(state, Color.White)
+                            Spacer(Modifier.width(4.dp))
+                            SpeedMenu(state, Color.White)
+                        }
                     }
                 }
-                // ---------- 右：圆弧歌词（排在一个真正的圆上） ----------
-                Box(Modifier.weight(1f).fillMaxHeight()) {
+                // ---------- 右：圆弧歌词 ----------
+                Box(Modifier.weight(1.15f).fillMaxHeight()) {
                     ArcLyrics(
-                        state.lyric, state.lyricIndex, state.positionMs,
+                        state.lyric, state.lyricIndex,
                         Modifier.fillMaxSize(), state.lyricLoading,
+                        curColor = MaterialTheme.colorScheme.primary,
                     ) { state.seek(it) }
                 }
             }
-
         }
     }
 }
@@ -1399,6 +1465,45 @@ fun SettingsDialog(state: AppState) {
                 Spacer(Modifier.height(6.dp))
                 Txt("请求日志：${NmLog.path()}", 11, color = MutedColor)
             }
+            Spacer(Modifier.height(16.dp))
+
+            // ---------- 字体 ----------
+            Txt("字体", 15, weight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FONT_NAMES.forEachIndexed { i, n ->
+                    val sel = state.fontKind == i
+                    Box(
+                        Modifier.clip(RoundedCornerShape(50))
+                            .background(if (sel) MaterialTheme.colorScheme.primary else SurfaceHiColor)
+                            .clickable { state.chooseFontKind(i) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) { Txt(n, 13, color = if (sel) Color(0xFF1A1A1A) else MutedColor) }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            // 字重：可变字体的 wght 轴，拖动即时生效并保存
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Txt("字重", 13, color = MutedColor)
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(SurfaceHiColor)
+                        .padding(horizontal = 10.dp, vertical = 3.dp),
+                ) { Txt(state.fontWght.toString(), 13, color = MaterialTheme.colorScheme.primary) }
+            }
+            Slider(
+                value = state.fontWght.toFloat(),
+                // 拖动过程中就写入，松手或退出都不会丢
+                onValueChange = { state.chooseFontWght(it.roundToInt()) },
+                valueRange = WGHT_MIN.toFloat()..WGHT_MAX.toFloat(),
+                steps = (WGHT_MAX - WGHT_MIN) / 10 - 1,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Txt(
+                if (state.fontKind == FONT_SYSTEM) "系统字体不支持调字重，切换内置字体后可用"
+                else "范围 $WGHT_MIN–$WGHT_MAX，默认 $WGHT_DEFAULT；改动立即保存",
+                11, color = MutedColor,
+            )
             Spacer(Modifier.height(16.dp))
 
             // ---------- 简繁转换 ----------
