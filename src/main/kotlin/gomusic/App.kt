@@ -39,6 +39,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -428,7 +431,8 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    itemsIndexed(groups, key = { i, g -> if (g.nmId > 0) "nm${'$'}{g.nmId}" else "loc${'$'}{g.title}#$i" }) { _, g ->
+                    // LazyVerticalGrid 没有 itemsIndexed，key 直接用 id/标题
+                    items(groups, key = { g -> if (g.nmId > 0) "nm${'$'}{g.nmId}" else "loc${'$'}{g.title}" }) { g ->
                         GroupCard(
                             titleWithSource(g.title, g.source), g.subtitle, g.cover,
                             onClick = {
