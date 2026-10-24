@@ -1,0 +1,37 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.10.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :checkRuntime
+> Task :checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :convertXmlValueResourcesForMain NO-SOURCE
+> Task :copyNonXmlValueResourcesForMain NO-SOURCE
+> Task :prepareComposeResourcesTaskForMain NO-SOURCE
+> Task :generateResourceAccessorsForMain NO-SOURCE
+> Task :generateActualResourceCollectorsForMain
+> Task :generateComposeResClass
+> Task :assembleMainResources
+> Task :processResources
+> Task :createRuntimeImage
+> Task :prepareAppResources NO-SOURCE
+> Task :unpackDefaultComposeDesktopJvmApplicationResources
+
+> Task :compileKotlin
+w: file:///home/runner/work/GoMusicForDesktop/GoMusicForDesktop/src/main/kotlin/gomusic/App.kt:145:50 'val Icons.Outlined.PlaylistPlay: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Outlined.PlaylistPlay.
+w: file:///home/runner/work/GoMusicForDesktop/GoMusicForDesktop/src/main/kotlin/gomusic/App.kt:232:44 'val Icons.Outlined.ArrowBack: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Outlined.ArrowBack.
+w: file:///home/runner/work/GoMusicForDesktop/GoMusicForDesktop/src/main/kotlin/gomusic/App.kt:564:40 'val Icons.Outlined.PlaylistAdd: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Outlined.PlaylistAdd.
+w: file:///home/runner/work/GoMusicForDesktop/GoMusicForDesktop/src/main/kotlin/gomusic/App.kt:604:51 'val Icons.Outlined.PlaylistAdd: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Outlined.PlaylistAdd.
+w: file:///home/runner/work/GoMusicForDesktop/GoMusicForDesktop/src/main/kotlin/gomusic/App.kt:691:40 'val Icons.Outlined.PlaylistAdd: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Outlined.PlaylistAdd.
+w: file:///home/runner/work/GoMusicForDesktop/GoMusicForDesktop/src/main/kotlin/gomusic/App.kt:763:44 'val Icons.Outlined.PlaylistAdd: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Outlined.PlaylistAdd.
+w: file:///home/runner/work/GoMusicForDesktop/GoMusicForDesktop/src/main/kotlin/gomusic/App.kt:1330:52 'val Icons.Outlined.PlaylistPlay: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Outlined.PlaylistPlay.
+w: file:///home/runner/work/GoMusicForDesktop/GoMusicForDesktop/src/main/kotlin/gomusic/App.kt:1355:52 'val Icons.Outlined.PlaylistAdd: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Outlined.PlaylistAdd.
+w: file:///home/runner/work/GoMusicForDesktop/GoMusicForDesktop/src/main/kotlin/gomusic/Netease.kt:372:9 This is a delicate API and its use requires care. Make sure you fully read and understand documentation of the declaration that is marked as a delicate API.
+
+> Task :compileJava NO-SOURCE
+> Task :classes
+> Task :jar
+
+> Task :createDistributable
+The distribution is written to /home/runner/work/GoMusicForDesktop/GoMusicForDesktop/build/compose/binaries/main/app
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/b-1792844387468.json
+
+BUILD SUCCESSFUL in 1m 14s
+10 actionable tasks: 10 executed
