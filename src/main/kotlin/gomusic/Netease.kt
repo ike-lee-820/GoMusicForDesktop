@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Request
 import java.io.IOException
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
 /** 二维码轮询状态 */
 data class QrStatus(val code: Int, val cookie: String? = null, val message: String? = null)

@@ -86,6 +86,7 @@ import kotlin.math.roundToInt
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material3.Slider
+import androidx.compose.ui.text.style.TextAlign
 
 @Composable
 fun App(state: AppState) {
@@ -1092,7 +1093,6 @@ fun QueueView(state: AppState) {
     }
 }
 
-@Composable
 /**
  * 音质菜单。
  * [tint] 为 null 时用文字按钮（设置页）；传颜色时用图标按钮（播放器控制区）。
@@ -1202,13 +1202,9 @@ fun FullPlayerOverlay(state: AppState) {
                         Txt(song.artist, 13, color = Color.White.copy(alpha = 0.72f), maxLines = 1)
                         Spacer(Modifier.height(4.dp))
                         // 歌名
-                        Text(
-                            song.title,
-                            color = Color.White,
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2,
-                            textAlign = TextAlign.Center,
+                        Txt(
+                            song.title, 20, color = Color.White,
+                            weight = FontWeight.Bold, maxLines = 2, align = TextAlign.Center,
                         )
                         Spacer(Modifier.height(2.dp))
                         // 专辑名
