@@ -84,6 +84,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.unit.IntOffset
+import kotlinx.coroutines.delay
+
+/** 圆周率，算圆弧用 */
+private const val PI_F = 3.14159265f
 
 /**
  * 相邻两行的纵向间距（dp）——这就是「行距」。

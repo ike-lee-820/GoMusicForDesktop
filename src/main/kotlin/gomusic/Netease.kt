@@ -16,6 +16,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.GlobalScope
 
 /** 二维码轮询状态 */
 data class QrStatus(val code: Int, val cookie: String? = null, val message: String? = null)
