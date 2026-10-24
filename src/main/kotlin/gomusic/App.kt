@@ -1007,7 +1007,21 @@ fun RightPane(state: AppState, modifier: Modifier) {
 fun LyricView(state: AppState) {
     val lines = state.lyric
     if (lines.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Txt("暂无歌词", 13, color = MutedColor) }
+        // 还在请求时显示「正在加载」，只有确认拿不到才说「暂无歌词」
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (state.lyricLoading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Txt("正在加载歌词…", 13, color = MutedColor)
+                }
+            } else {
+                Txt("暂无歌词", 13, color = MutedColor)
+            }
+        }
         return
     }
     val idx = state.lyricIndex.coerceIn(0, lines.lastIndex)
@@ -1213,7 +1227,7 @@ fun FullPlayerOverlay(state: AppState) {
                 }
                 // ---------- 右：中心旋转式歌词 ----------
                 Box(Modifier.weight(1f).fillMaxHeight()) {
-                    WheelLyrics(state.lyric, state.lyricIndex, Modifier.fillMaxSize()) { state.seek(it) }
+                    WheelLyrics(state.lyric, state.lyricIndex, Modifier.fillMaxSize(), state.lyricLoading) { state.seek(it) }
                 }
             }
         }

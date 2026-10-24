@@ -383,11 +383,24 @@ fun WheelLyrics(
     lines: List<LrcLine>,
     idx: Int,
     modifier: Modifier = Modifier,
+    loading: Boolean = false,
     onSeek: (Long) -> Unit,
 ) {
     if (lines.isEmpty()) {
+        // 还在请求时显示「正在加载」，只有确认拿不到才说「暂无歌词」
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
+            if (loading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Txt("正在加载歌词…", 14, color = Color.White.copy(alpha = 0.7f))
+                }
+            } else {
+                Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
+            }
         }
         return
     }

@@ -717,6 +717,14 @@ class AppState {
     var positionMs by mutableStateOf(0L); private set
     var durationMs by mutableStateOf(0L); private set
     var lyric by mutableStateOf(emptyList<LrcLine>()); private set
+    /** 歌词是否正在加载：UI 据此显示「正在加载」，而不是过早显示「暂无歌词」 */
+    var lyricLoading by mutableStateOf(false); private set
+    /**
+     * 当前歌词属于哪首歌。
+     * 切换音质会重新解析地址并再次 loadLyric，但歌词不用重取
+     * （同一首歌的歌词与音质档位无关）。
+     */
+    private var lyricSsid: String? = null
     var qualities by mutableStateOf(emptyList<String>()); private set
 
     val currentSong: Song? get() = curSsid?.let { id ->
@@ -938,7 +946,12 @@ class AppState {
             }
             if (src == null) return@launch
             player.play(src.first, src.second, fromMs)
-            loadLyric(song.ssid)
+            // 同一首歌（切换音质后会重新走到这里）不重新取歌词
+            if (song.ssid != lyricSsid) {
+                lyric = emptyList()
+                lyricLoading = true
+                loadLyric(song.ssid)
+            }
         }
     }
 
@@ -964,13 +977,23 @@ class AppState {
             val final = if (t.isBlank()) {
                 downloads.firstOrNull { it.ssid == ssid }?.let { LocalLib.readText(it.lyric) } ?: ""
             } else t
-            if (curSsid == ssid) lyric = lyricLines(final)
+            if (curSsid == ssid) {
+                lyric = lyricLines(final)
+                lyricLoading = false
+                lyricSsid = ssid
+            }
             return
         }
         val rec = downloads.firstOrNull { it.ssid == ssid }
         if (offline) {
             val t = rec?.let { LocalLib.readText(it.lyric) } ?: ""
-            run { if (curSsid == ssid) lyric = lyricLines(t) }
+            run {
+                if (curSsid == ssid) {
+                    lyric = lyricLines(t)
+                    lyricLoading = false
+                    lyricSsid = ssid
+                }
+            }
             return
         }
         var t = runCatching { withContext(Dispatchers.IO) { Api.detail(ssid) } }
@@ -984,7 +1007,13 @@ class AppState {
         if (t.isBlank()) t = runCatching { withContext(Dispatchers.IO) { Api.lyrics(ssid) } }.getOrDefault("")
         if (t.isBlank()) t = rec?.let { LocalLib.readText(it.lyric) } ?: ""
         val lines = lyricLines(t)
-        run { if (curSsid == ssid) lyric = lines }
+        run {
+            if (curSsid == ssid) {
+                lyric = lines
+                lyricLoading = false
+                lyricSsid = ssid
+            }
+        }
     }
 
     fun toggle() {
