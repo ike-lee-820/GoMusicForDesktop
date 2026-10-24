@@ -129,22 +129,21 @@ jobs:
         run: |
           {
           set -uo pipefail
-          echo "== token 权限诊断 =="
-          curl -sS -o /dev/null -D - -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}" | grep -i "x-oauth-scopes" || echo "(no scope header)"
-          echo "== 读取仓库（判断 contents 权限）=="
-          curl -sS -o /dev/null -w "GET repo -> HTTP %{http_code}\n" -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}"
-          echo "== 尝试写一个文件验证 contents:write =="
-          curl -sS -o /dev/null -w "PUT file -> HTTP %{http_code}\n" -X PUT \
-            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/contents/ci/_perm_test.txt" \
-            -d '{"message":"perm test","content":"dGVzdA=="}'
           VER=$(grep -m1 '^version = ' build.gradle.kts | sed -E 's/version = "(.*)"/\1/')
           if [ -z "$VER" ]; then VER="1.0.0"; fi
           TAG="v$VER"
           echo "release tag = $TAG"
           echo "token set = $([ -n "$GH_TOKEN" ] && echo yes || echo no)"
+          echo "== token 权限诊断 =="
+          curl -sS -o /dev/null -D - -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}" | grep -i "x-oauth-scopes" || echo "(no scope header)"
+          curl -sS -o /dev/null -w "GET repo -> HTTP %{http_code}\n" -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}"
+          echo "== 验证 contents:write =="
+          curl -sS -o /dev/null -w "PUT file -> HTTP %{http_code}\n" -X PUT \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/ci/_perm_test.txt" \
+            -d '{"message":"perm test","content":"dGVzdA=="}'
           df -h . || true
           shopt -s nullglob
           files=(out/*.zip)
@@ -152,7 +151,6 @@ jobs:
             echo "no artifact to upload"; ls -R out || true; exit 1
           fi
           ls -l out/
-          # 用 API 操作（gh 上传大文件时不返回可读错误，这里每一步都打印状态码）
           REL_ID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" \
             | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))")
@@ -162,18 +160,18 @@ jobs:
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/releases" \
-              -d "{\"tag_name\":\"$TAG\",\"name\":\"GoMusic Desktop $TAG\",\"body\":\"自动构建：Windows / Linux / macOS（x64 与 ARM64）\"}")
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"GoMusic Desktop $TAG\",\"body\":\"auto build\"}")
             echo "$RESP" | tail -1
             REL_ID=$(echo "$RESP" | head -n -1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))")
           else
             echo "release exists id=$REL_ID"
           fi
+          echo "REL_ID=$REL_ID"
           if [ -z "$REL_ID" ]; then echo "无法取得 release id"; exit 1; fi
           fail=0
           for f in "${files[@]}"; do
             NAME=$(basename "$f")
             echo "== uploading $NAME ($(stat -c%s "$f") bytes)"
-            # 已存在的同名资源先删掉，避免重名冲突
             OLD=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
               "https://api.github.com/repos/${{ github.repository }}/releases/$REL_ID/assets" \
               | python3 -c "
@@ -189,19 +187,27 @@ except Exception: print('')")
             fi
             ok=0
             for i in 1 2 3; do
-              CODE=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+              BODY=$(mktemp)
+              CODE=$(curl -sS -o "$BODY" -w "%{http_code}" -X POST \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "Content-Type: application/zip" \
                 --data-binary @"$f" \
                 "https://uploads.github.com/repos/${{ github.repository }}/releases/$REL_ID/assets?name=$NAME")
               echo "  try $i -> HTTP $CODE"
+              if [ "$CODE" != "201" ] && [ "$CODE" != "200" ]; then
+                echo "  body: $(head -c 500 "$BODY")"
+              fi
+              rm -f "$BODY"
               if [ "$CODE" = "201" ] || [ "$CODE" = "200" ]; then ok=1; break; fi
               sleep 8
             done
             if [ "$ok" != "1" ]; then echo "  FAILED $NAME"; fail=1; fi
           done
+          echo "RESULT fail=$fail"
           exit $fail
-          }
+          } 2>&1 | tee release.log
+          exit ${PIPESTATUS[0]}
+
       - name: Publish release log
         if: always()
         continue-on-error: true
