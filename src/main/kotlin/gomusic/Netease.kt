@@ -567,34 +567,6 @@ object Netease {
         }.distinctBy { it.nmId }
     }
 
-    /** 专辑详情：拿歌手名，让专辑页副标题显示真实歌手 */
-    fun albumArtist(id: Long): String? {
-        val root = get("/album", "id" to id.toString())
-        val d = root.obj("album") ?: return null
-        d.obj("artist")?.str("name")?.takeIf { it.isNotBlank() }?.let { return it }
-        val arr = (d["artists"] as? JsonElement)?.jsonArray ?: return null
-        return arr.firstNotNullOfOrNull { (it as? JsonObject)?.str("name")?.takeIf { n -> n.isNotBlank() } }
-    }
-
-    /** 歌手详情：拿歌手自己的头像，避免误用专辑封面 */
-    fun artistDetail(id: Long): Group? {
-        val root = get("/artist/detail", "id" to id.toString())
-        val d = root.obj("data") ?: return null
-        val artist = d.obj("artist") ?: return null
-        val aid = idOf(artist)
-        val name = artist.str("name").orEmpty()
-        if (aid <= 0L || name.isBlank()) return null
-        return Group(
-            title = name,
-            subtitle = "网易云歌手",
-            cover = pic(artist.str("picUrl", "img1v1Url", "cover")),
-            songs = emptyList(),
-            artist = name,
-            source = SRC_NETEASE,
-            nmId = aid,
-            nmKind = "artist",
-        )
-    }
 
     // ================= 首页 =================
 

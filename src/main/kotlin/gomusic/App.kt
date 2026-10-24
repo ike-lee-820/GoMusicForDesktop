@@ -1,6 +1,7 @@
 package gomusic
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.runtime.produceState
@@ -1545,7 +1546,6 @@ fun PickDialog(state: AppState, title: String, ids: List<String>, onClose: () ->
     }
 }
 
-@Composable
 /** 带说明文字的输入弹窗（导入歌单还原字符用） */
 @Composable
 fun NameDialogLike(
@@ -1588,6 +1588,7 @@ fun NameDialogLike(
     }
 }
 
+@Composable
 fun NameDialog(title: String, initial: String, onClose: () -> Unit, onOk: (String) -> Unit) {
     var v by remember(initial) { mutableStateOf(initial) }
     Box(
