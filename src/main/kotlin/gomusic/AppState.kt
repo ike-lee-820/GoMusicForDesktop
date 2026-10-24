@@ -705,8 +705,6 @@ class AppState {
     var speed by mutableStateOf(Prefs.speed); private set
     /** 全局字体：0 系统 / 1 思源宋体 */
     var fontKind by mutableStateOf(Prefs.fontKind); private set
-    /** 可变字体的字重（wght），250~900，默认 450 */
-    var fontWght by mutableStateOf(Prefs.fontWght); private set
     var fixedTheme by mutableStateOf(Prefs.themeColor?.let { Color(it.toULong()) }); private set
     var coverColor by mutableStateOf<Color?>(null); private set
     val primary: Color get() = fixedTheme ?: coverColor ?: DefaultPrimary
@@ -1090,15 +1088,6 @@ class AppState {
     fun chooseFontKind(k: Int) {
         fontKind = k
         Prefs.fontKind = k
-    }
-
-    /**
-     * 调整可变字体的字重（250~900）。拖动滑块时每次都落盘。
-     */
-    fun chooseFontWght(w: Int) {
-        val v = w.coerceIn(250, 900)
-        fontWght = v
-        Prefs.fontWght = v
     }
 
     fun chooseSpeed(v: Float) {

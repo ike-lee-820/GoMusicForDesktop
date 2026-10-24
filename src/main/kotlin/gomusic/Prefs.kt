@@ -44,8 +44,6 @@ data class PrefsFile(
     val playMode: Int = 0,
     /** 全局字体：0 系统字体（默认）/ 1 思源宋体 */
     val fontKind: Int = 0,
-    /** 可变字体的字重（wght 轴），250~900，默认 450 */
-    val fontWght: Int = 450,
     /** 简繁转换模式：0 简体 / 1 香港繁体 / 2 仅搜索统一 / 3 不转换 */
     val zhConvert: Int = 0,
     val speed: Float = 1f,
@@ -123,10 +121,6 @@ object Prefs {
     /**
      * 可变字体的字重（wght 轴）。思源宋体范围 250~900，默认 450。
      */
-    var fontWght: Int
-        get() = data.fontWght.coerceIn(250, 900)
-        set(v) { data = data.copy(fontWght = v.coerceIn(250, 900)); save() }
-
     var speed: Float
         get() = data.speed
         set(v) { data = data.copy(speed = v); save() }

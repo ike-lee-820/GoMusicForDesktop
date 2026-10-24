@@ -9,16 +9,8 @@ import androidx.compose.ui.text.platform.Font as PlatformFont
 /** 系统字体 */
 const val FONT_SYSTEM = 0
 
-/** 思源宋体（可变字体，内置） */
+/** 思源宋体（内置完整字库，未子集化） */
 const val FONT_SONG = 1
-
-/** 可变字体 wght 轴范围 */
-const val WGHT_MIN = 250
-
-const val WGHT_MAX = 900
-
-/** 默认字重 */
-const val WGHT_DEFAULT = 450
 
 /** 字体名称，设置界面直接用 */
 val FONT_NAMES = listOf("系统字体", "思源宋体")
@@ -32,20 +24,17 @@ private const val SONG_RES = "fonts/song.ttf"
  * 桌面端必须用 androidx.compose.ui.text.platform.Font（它按 resources
  * 路径加载），androidx.compose.ui.text.font.Font 只认 Android 的资源 id。
  *
- * 可变字体的 wght 轴在这里没法直接指定（桌面端 Font 不支持
- * variationSettings），所以用 FontWeight 注册两个实例：
- * 常规用设置的字重，另一个用 Bold，界面里的粗体仍有层次。
+ * 不提供字重调节：桌面端 Font 不支持可变字轴（variationSettings），
+ * 字重由字体文件本身决定，注册常规与 Bold 两个实例让界面粗体仍有层次。
  */
 @Composable
-fun rememberAppFont(kind: Int, wght: Int): FontFamily? =
-    remember(kind, wght) { buildFontFamily(kind, wght) }
+fun rememberAppFont(kind: Int): FontFamily? = remember(kind) { buildFontFamily(kind) }
 
-private fun buildFontFamily(kind: Int, wght: Int): FontFamily? {
+private fun buildFontFamily(kind: Int): FontFamily? {
     if (kind != FONT_SONG) return null
-    val w = wght.coerceIn(WGHT_MIN, WGHT_MAX)
     return runCatching {
         FontFamily(
-            PlatformFont(SONG_RES, weight = FontWeight(w)),
+            PlatformFont(SONG_RES, weight = FontWeight.Normal),
             PlatformFont(SONG_RES, weight = FontWeight.Bold),
         )
     }.onFailure {

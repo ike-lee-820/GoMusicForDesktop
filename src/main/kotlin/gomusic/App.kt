@@ -91,7 +91,7 @@ import androidx.compose.material.icons.outlined.Remove
 
 @Composable
 fun App(state: AppState) {
-    GoTheme(state.primary, rememberAppFont(state.fontKind, state.fontWght)) {
+    GoTheme(state.primary, rememberAppFont(state.fontKind)) {
         // 简繁转换：设置一改，界面与文字全部跟着变
         androidx.compose.runtime.CompositionLocalProvider(
             LocalZhMode provides state.zhConvert,
@@ -1548,57 +1548,8 @@ fun SettingsDialog(state: AppState) {
                     ) { Txt(n, 13, color = if (sel) Color(0xFF1A1A1A) else MutedColor) }
                 }
             }
-            Spacer(Modifier.height(10.dp))
-            // 字重：可变字体的 wght 轴，拖动即时生效并保存
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Txt("字重", 13, color = MutedColor)
-                Spacer(Modifier.width(8.dp))
-                Box(
-                    Modifier.clip(RoundedCornerShape(50)).background(SurfaceHiColor)
-                        .padding(horizontal = 10.dp, vertical = 3.dp),
-                ) { Txt(state.fontWght.toString(), 13, color = MaterialTheme.colorScheme.primary) }
-            }
-            // 不用 Slider：桌面端 Slider 在带 steps 时会在内部按步长建数组，
-            // 某些 Compose 版本会越界（表现就是打开设置直接崩）。
-            // 改成「− / + 按钮 + 几个常用档位」，功能一样且没有这个隐患
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconBtn(Icons.Outlined.Remove, "减字重", size = 28.dp) {
-                    state.chooseFontWght(state.fontWght - 10)
-                }
-                Spacer(Modifier.width(10.dp))
-                Box(
-                    Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp))
-                        .background(SurfaceHiColor),
-                    contentAlignment = Alignment.CenterStart,
-                ) {
-                    val frac = (state.fontWght - WGHT_MIN).toFloat() / (WGHT_MAX - WGHT_MIN).toFloat()
-                    Box(
-                        Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(6.dp)
-                            .clip(RoundedCornerShape(3.dp)).background(MaterialTheme.colorScheme.primary),
-                    )
-                }
-                Spacer(Modifier.width(10.dp))
-                IconBtn(Icons.Outlined.Add, "加字重", size = 28.dp) {
-                    state.chooseFontWght(state.fontWght + 10)
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(250, 350, 450, 550, 700).forEach { w ->
-                    val sel = state.fontWght == w
-                    Box(
-                        Modifier.clip(RoundedCornerShape(50))
-                            .background(if (sel) MaterialTheme.colorScheme.primary else SurfaceHiColor)
-                            .clickable { state.chooseFontWght(w) }
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                    ) { Txt(w.toString(), 12, color = if (sel) Color(0xFF1A1A1A) else MutedColor) }
-                }
-            }
-            Txt(
-                if (state.fontKind == FONT_SYSTEM) "系统字体不支持调字重，切换内置字体后可用"
-                else "范围 $WGHT_MIN–$WGHT_MAX，默认 $WGHT_DEFAULT；改动立即保存",
-                11, color = MutedColor,
-            )
+            Spacer(Modifier.height(6.dp))
+            Txt("切换后立即生效，下次启动保持。字重由字体本身决定，不单独提供调节", 11, color = MutedColor)
             Spacer(Modifier.height(16.dp))
 
             // ---------- 简繁转换 ----------
