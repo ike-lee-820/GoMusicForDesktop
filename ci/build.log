@@ -34,3 +34,10 @@ gradle/actions: Writing build results to /Users/runner/work/_temp/.gradle-action
 
 BUILD SUCCESSFUL in 1m 13s
 10 actionable tasks: 10 executed
+app dir = /Users/runner/work/GoMusicForDesktop/GoMusicForDesktop/build/compose/binaries/main/app
+total 0
+drwxr-xr-x  3 runner  staff  96 Oct 24 12:20 .
+drwxr-xr-x  3 runner  staff  96 Oct 24 12:20 ..
+drwxr-xr-x  3 runner  staff  96 Oct 24 12:20 GoMusic.app
+packed files: 184
+out: /Users/runner/work/GoMusicForDesktop/GoMusicForDesktop/GoMusic-macos-x64.zip 165821886 bytes
