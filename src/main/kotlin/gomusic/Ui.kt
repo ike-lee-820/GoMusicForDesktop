@@ -495,6 +495,131 @@ fun WheelLyrics(
     }
 }
 
+/**
+ * 以中心为圆心的圆形滚动歌词。
+ *
+ * 歌词沿以封面中心为圆心、[radius] 为半径的圆周排列：
+ * 当前行固定在正上方（12 点方向），其余行按角度分布在两侧并绕圆心旋转，
+ * 字身沿切线方向对齐，越远越小越淡。
+ * 上下滑动可以手动旋转圆盘，点某一行直接跳到那一句。
+ */
+@Composable
+fun CircleLyrics(
+    lines: List<LrcLine>,
+    idx: Int,
+    radius: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier,
+    loading: Boolean = false,
+    onSeek: (Long) -> Unit,
+) {
+    if (lines.isEmpty()) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (loading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Txt("正在加载歌词…", 13, color = Color.White.copy(alpha = 0.7f))
+                }
+            } else {
+                Txt("暂无歌词", 13, color = Color.White.copy(alpha = 0.55f))
+            }
+        }
+        return
+    }
+    val scope = rememberCoroutineScope()
+    val density = androidx.compose.ui.unit.LocalDensity.current
+    val rPx = with(density) { radius.toPx() }
+    val stepDeg = 13f
+    val stepRad = stepDeg * 0.017453292f
+    val arcPx = (rPx * stepRad).coerceAtLeast(1f)
+    val offset = remember { Animatable(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    var manualUntil by remember { mutableLongStateOf(0L) }
+    val last = lines.lastIndex.coerceAtLeast(0).toFloat()
+
+    LaunchedEffect(idx, lines.size) {
+        if (idx >= 0 && !dragging && System.currentTimeMillis() > manualUntil) {
+            offset.animateTo(idx.toFloat().coerceIn(0f, last), spring(stiffness = Spring.StiffnessLow))
+        }
+    }
+
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val lineW = maxWidth * 0.62f
+        Box(
+            Modifier.fillMaxSize()
+                .pointerInput(lines) {
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            dragging = true
+                            manualUntil = Long.MAX_VALUE
+                            scope.launch { offset.stop() }
+                        },
+                        onDragEnd = {
+                            dragging = false
+                            manualUntil = System.currentTimeMillis() + 4000
+                            scope.launch {
+                                offset.animateTo(
+                                    offset.value.roundToInt().toFloat().coerceIn(0f, last),
+                                    spring(stiffness = Spring.StiffnessLow),
+                                )
+                            }
+                        },
+                        onDragCancel = {
+                            dragging = false
+                            manualUntil = System.currentTimeMillis() + 4000
+                        },
+                        onVerticalDrag = { _, dragAmount ->
+                            val d = -dragAmount / arcPx
+                            scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, last)) }
+                        },
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            val cur = offset.value
+            val span = 8
+            val from = (cur - span).toInt().coerceAtLeast(0)
+            val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
+            for (i in from..to) {
+                val d = i - cur
+                val theta = d * stepDeg
+                val rad = theta * 0.017453292f
+                val x = rPx * sin(rad)
+                val y = -rPx * cos(rad)
+                val fade = (1f - abs(d) / (span + 1f)).coerceIn(0f, 1f)
+                val isCur = abs(d) < 0.5f
+                Text(
+                    zhText(lines[i].text),
+                    Modifier
+                        .width(lineW)
+                        .graphicsLayer {
+                            translationX = x
+                            translationY = y
+                            rotationZ = theta
+                            alpha = 0.18f + 0.82f * fade
+                            transformOrigin = TransformOrigin(0.5f, 0.5f)
+                        }
+                        .clickable(enabled = lines[i].timeMs >= 0) {
+                            manualUntil = System.currentTimeMillis() + 6000
+                            onSeek(lines[i].timeMs)
+                        }
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    color = Color.White,
+                    fontSize = if (isCur) 16.sp else 13.sp,
+                    lineHeight = if (isCur) 22.sp else 18.sp,
+                    fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 /** 简洁版单色进度条：细轨道 + 白色进度，可拖动 */
 @Composable
 fun SimpleSeekBar(position: Long, duration: Long, onSeek: (Long) -> Unit) {
