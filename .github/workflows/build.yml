@@ -126,37 +126,65 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          # 版本号从 build.gradle.kts 读，不再写死，避免和实际版本对不上
+          set -uo pipefail
           VER=$(grep -m1 '^version = ' build.gradle.kts | sed -E 's/version = "(.*)"/\1/')
           if [ -z "$VER" ]; then VER="1.0.0"; fi
           TAG="v$VER"
           echo "release tag = $TAG"
-          gh --version
-          # 创建发布：已存在就跳过（并发/重跑时不会因已存在而失败）
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" \
-              --title "GoMusic Desktop $TAG" \
-              --notes "自动构建：Windows / Linux / macOS（x64 与 ARM64）" || \
-              echo "release create 返回非零，继续尝试上传"
-          fi
+          echo "token set = $([ -n "$GH_TOKEN" ] && echo yes || echo no)"
+          df -h . || true
           shopt -s nullglob
           files=(out/*.zip)
           if [ ${#files[@]} -eq 0 ]; then
-            echo "no artifact to upload"
-            ls -R out || true
-            exit 1
+            echo "no artifact to upload"; ls -R out || true; exit 1
           fi
-          # 逐个上传并重试：刚创建的发布会有短暂的索引延迟，直接传可能失败
+          ls -l out/
+          # 用 API 操作（gh 上传大文件时不返回可读错误，这里每一步都打印状态码）
+          REL_ID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))")
+          if [ -z "$REL_ID" ]; then
+            echo "creating release $TAG"
+            RESP=$(curl -sS -w "\nHTTP:%{http_code}" -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"GoMusic Desktop $TAG\",\"body\":\"自动构建：Windows / Linux / macOS（x64 与 ARM64）\"}")
+            echo "$RESP" | tail -1
+            REL_ID=$(echo "$RESP" | head -n -1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))")
+          else
+            echo "release exists id=$REL_ID"
+          fi
+          if [ -z "$REL_ID" ]; then echo "无法取得 release id"; exit 1; fi
+          fail=0
           for f in "${files[@]}"; do
-            echo "uploading $f"
+            NAME=$(basename "$f")
+            echo "== uploading $NAME ($(stat -c%s "$f") bytes)"
+            # 已存在的同名资源先删掉，避免重名冲突
+            OLD=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/$REL_ID/assets" \
+              | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+    print(next((a['id'] for a in d if a['name']=='$NAME'), ''))
+except Exception: print('')")
+            if [ -n "$OLD" ]; then
+              curl -sS -o /dev/null -w "  delete old: HTTP %{http_code}\n" -X DELETE \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                "https://api.github.com/repos/${{ github.repository }}/releases/assets/$OLD"
+            fi
+            ok=0
             for i in 1 2 3; do
-              if gh release upload "$TAG" "$f" --clobber; then
-                echo "  ok ($i)"
-                break
-              fi
-              echo "  第 $i 次失败，5 秒后重试"
-              sleep 5
-              if [ "$i" = "3" ]; then exit 1; fi
+              CODE=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Content-Type: application/zip" \
+                --data-binary @"$f" \
+                "https://uploads.github.com/repos/${{ github.repository }}/releases/$REL_ID/assets?name=$NAME")
+              echo "  try $i -> HTTP $CODE"
+              if [ "$CODE" = "201" ] || [ "$CODE" = "200" ]; then ok=1; break; fi
+              sleep 8
             done
+            if [ "$ok" != "1" ]; then echo "  FAILED $NAME"; fail=1; fi
           done
+          exit $fail
