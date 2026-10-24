@@ -44,3 +44,4 @@
 - `1.3.6` 小迭代：全屏播放器歌词改回竖排滚动，与手机横屏一致
 - `1.3.7` 小迭代：修编译（LocalDensity 包路径、NmUi 缺 launch、去重复 import）；歌词改为微微旋转
 - `1.3.8` 小迭代：删掉不再使用的 WheelLyrics / CircleLyrics 及其 LocalDensity 依赖；补 mutableIntStateOf 导入
+- `1.4.0` 大迭代：歌词改排在一个真正的圆上（位置沿圆弧、文字沿半径、连续插值旋转）；全屏播放器两栏重写，只保留控制区一处进度条

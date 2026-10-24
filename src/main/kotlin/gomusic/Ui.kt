@@ -1,6 +1,8 @@
 package gomusic
 
 import kotlin.math.abs
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyColumn
@@ -378,20 +380,23 @@ fun ToastHost(msg: String?) {
 }
 
 /**
- * 竖排滚动歌词（与参考图一致）。
+ * 圆弧歌词：歌词排在一个真正的圆上。
  *
- * 当前句居中高亮，前后几句依次淡显；可以上下滑动浏览，
- * 点某一句直接跳到那一句。跟播时自动把当前句滚回正中，
- * 手动滑动后暂停几秒再恢复。
+ * 圆心在左侧（水平方向）半径 1.35× 高度处，歌词沿圆右侧的弧排列，
+ * 每行的位置（沿弧的横纵偏移）与倾斜角（沿半径方向）都由同一个圆心角算出，
+ * 所以行与行之间的相对关系是真实的圆周几何，不是各自硬歪一个角度。
+ *
+ * 旋转是连续的：按播放进度在两句之间插值成浮点行号，圆盘平滑转动，
+ * 不是一行一行跳。可以上下滑动手动转动，点某一句直接跳过去。
  */
 @Composable
-fun VerticalLyrics(
+fun ArcLyrics(
     lines: List<LrcLine>,
     idx: Int,
+    positionMs: Long,
     modifier: Modifier = Modifier,
     loading: Boolean = false,
-    curColor: Color = Color.White,
-    dimColor: Color = Color.White.copy(alpha = 0.42f),
+    radiusFactor: Float = 1.35f,
     onSeek: (Long) -> Unit,
 ) {
     if (lines.isEmpty()) {
@@ -399,67 +404,112 @@ fun VerticalLyrics(
             if (loading) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(
-                        color = curColor, modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                        color = Color.White, modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
                     )
                     Spacer(Modifier.width(8.dp))
-                    Txt("正在加载歌词…", 14, color = dimColor)
+                    Txt("正在加载歌词…", 14, color = Color.White.copy(alpha = 0.7f))
                 }
             } else {
-                Txt("暂无歌词", 14, color = dimColor)
+                Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
             }
         }
         return
     }
-    val st = androidx.compose.foundation.lazy.rememberLazyListState()
-    var manualUntil by remember { mutableLongStateOf(0L) }
-    var auto by remember { mutableStateOf(false) }
-    LaunchedEffect(st) {
-        androidx.compose.runtime.snapshotFlow { st.isScrollInProgress }
-            .collect { if (it && !auto) manualUntil = System.currentTimeMillis() + 4000 }
+    val scope = rememberCoroutineScope()
+    var hPx by remember { mutableIntStateOf(1) }
+    val span = 6
+    val rowH = 44.dp
+    val target = remember(lines, positionMs) {
+        if (idx >= 0) floatIndex(lines, positionMs) else 0f
     }
-    LaunchedEffect(idx, lines.size) {
-        if (idx >= 0 && System.currentTimeMillis() > manualUntil) {
-            auto = true
-            try { st.animateScrollToItem(idx) } finally { auto = false }
-        }
-    }
-    BoxWithConstraints(modifier.fillMaxSize()) {
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            state = st,
-            contentPadding = PaddingValues(vertical = maxHeight / 2 - 30.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            itemsIndexed(lines) { i, l ->
-                val cur = i == idx
-                // 微微旋转：以当前行为基准，越靠外的行倾斜一点点，形成很轻的扇形
-                val d = if (idx >= 0) (i - idx).toFloat() else 0f
-                val rot = (d * 2.2f).coerceIn(-9f, 9f)
-                val fade = (1f - abs(d) / 9f).coerceIn(0.32f, 1f)
-                Text(
-                    zhText(l.text),
-                    Modifier.fillMaxWidth()
-                        .graphicsLayer {
-                            rotationZ = rot
-                            scaleX = 1f - 0.015f * abs(d)
-                            scaleY = 1f - 0.015f * abs(d)
-                            alpha = fade
-                            transformOrigin = TransformOrigin(0.5f, 0.5f)
+    val smooth by androidx.compose.animation.core.animateFloatAsState(
+        target, spring(stiffness = Spring.StiffnessLow), label = "arc",
+    )
+    val delta = remember { Animatable(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    var frozen by remember { mutableFloatStateOf(0f) }
+    val cur = (if (dragging) frozen else smooth) + delta.value
+
+    BoxWithConstraints(
+        modifier.fillMaxSize()
+            .onSizeChanged { hPx = it.height.coerceAtLeast(1) }
+            .pointerInput(lines) {
+                detectVerticalDragGestures(
+                    onDragStart = {
+                        dragging = true
+                        frozen = cur
+                        scope.launch { delta.snapTo(0f) }
+                    },
+                    onDragEnd = {
+                        dragging = false
+                        scope.launch {
+                            delta.snapTo(frozen + delta.value - smooth)
+                            delta.animateTo(0f, tween(600))
                         }
-                        .clickable(enabled = l.timeMs >= 0) {
-                            manualUntil = System.currentTimeMillis() + 6000
-                            onSeek(l.timeMs)
-                        }
-                        .padding(horizontal = 24.dp, vertical = 6.dp),
-                    color = if (cur) curColor else dimColor,
-                    fontSize = if (cur) 19.sp else 16.sp,
-                    lineHeight = if (cur) 30.sp else 26.sp,
-                    fontWeight = if (cur) FontWeight.Bold else FontWeight.Normal,
-                    textAlign = TextAlign.Center,
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        scope.launch { delta.animateTo(0f, tween(400)) }
+                    },
+                    onVerticalDrag = { _, dragAmount ->
+                        val rowPx = (hPx / (span * 2 + 1f)).coerceAtLeast(1f)
+                        scope.launch { delta.snapTo(delta.value - dragAmount / rowPx) }
+                    },
                 )
-            }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        val r = maxHeight * radiusFactor
+        // 每行对应的圆心角：由行高弧长 / 半径推出，几何自洽
+        val stepRad = rowH.value / r.value.coerceAtLeast(1f)
+        val rPx = r.value
+        val shift = (rPx * (1 - cos(span * stepRad))) / 2
+        val lineW = maxWidth * 0.86f
+        val from = (cur - span).toInt().coerceAtLeast(0)
+        val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
+        for (i in from..to) {
+            val d = i - cur
+            val th = d * stepRad
+            val x = -rPx * (1 - cos(th)) + shift
+            val y = rPx * sin(th)
+            val fade = (1f - abs(d) / (span + 1f)).coerceIn(0.28f, 1f)
+            val isCur = abs(d) < 0.5f
+            Text(
+                zhText(lines[i].text),
+                Modifier
+                    .width(lineW)
+                    .offset { androidx.compose.ui.unit.IntOffset(x.roundToInt(), y.roundToInt()) }
+                    .graphicsLayer {
+                        rotationZ = (th * 57.29578f).coerceIn(-38f, 38f)
+                        alpha = fade
+                        transformOrigin = TransformOrigin(0.5f, 0.5f)
+                    }
+                    .clickable(enabled = lines[i].timeMs >= 0) { onSeek(lines[i].timeMs) }
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                color = Color.White,
+                fontSize = if (isCur) 18.sp else 15.sp,
+                lineHeight = if (isCur) 28.sp else 24.sp,
+                fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
+}
+
+/** 按播放进度算出浮点行号：在两句之间线性插值，供圆盘连续转动 */
+private fun floatIndex(lines: List<LrcLine>, pos: Long): Float {
+    if (lines.isEmpty()) return 0f
+    var i = 0
+    for (k in lines.indices) {
+        if (lines[k].timeMs in 0..pos) i = k else if (lines[k].timeMs > pos) break
+    }
+    if (i >= lines.lastIndex) return i.toFloat()
+    val t0 = lines[i].timeMs.coerceAtLeast(0)
+    val t1 = lines[i + 1].timeMs
+    if (t1 <= t0) return i.toFloat()
+    return i + ((pos - t0).toFloat() / (t1 - t0)).coerceIn(0f, 1f)
 }
 
 /** 简洁版单色进度条：细轨道 + 白色进度，可拖动 */
