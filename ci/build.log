@@ -40,3 +40,10 @@ gradle/actions: Writing build results to D:\a\_temp\.gradle-actions\build-result
 
 BUILD SUCCESSFUL in 1m 55s
 12 actionable tasks: 12 executed
+app dir = D:\a\GoMusicForDesktop\GoMusicForDesktop/build/compose/binaries/main/app
+total 0
+drwxr-xr-x 1 runneradmin 197121 0 Oct 24 12:21 .
+drwxr-xr-x 1 runneradmin 197121 0 Oct 24 12:21 ..
+drwxr-xr-x 1 runneradmin 197121 0 Oct 24 12:21 GoMusic
+packed files: 222
+out: D:\a\GoMusicForDesktop\GoMusicForDesktop/GoMusic-windows-x64.zip 161497611 bytes
