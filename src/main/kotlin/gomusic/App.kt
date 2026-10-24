@@ -1,6 +1,11 @@
 package gomusic
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.runtime.produceState
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
+import androidx.compose.ui.draw.blur
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
@@ -103,6 +108,8 @@ fun App(state: AppState) {
             if (state.showHistory) HistoryDialog(state)
             // 更新弹窗放在最外层：盖住其他界面
             if (state.showUpdate) UpdateDialog(state)
+            // 全屏播放器：横屏 / 桌面端的双栏布局
+            if (state.showFullPlayer && state.currentSong != null) FullPlayerOverlay(state)
             if (state.nmPage != null) {
                 Box(
                     Modifier.fillMaxSize().background(BgColor),
@@ -935,10 +942,17 @@ private fun copyToClipboard(text: String) {
 fun RightPane(state: AppState, modifier: Modifier) {
     val cs = MaterialTheme.colorScheme
     val song = state.currentSong
-    var tab by remember { mutableStateOf(0) }
+    val tab = state.rightTab
     Column(modifier.background(SurfaceColor).padding(20.dp)) {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Cover(song?.coverUrl, Modifier.fillMaxWidth(0.72f).aspectRatio(1f), 512, 20.dp)
+            // 点封面打开全屏播放器（双栏：播放器 + 旋转歌词）
+            Cover(
+                song?.coverUrl,
+                Modifier.fillMaxWidth(0.72f).aspectRatio(1f).clickable(enabled = song != null) {
+                    state.openFullPlayer()
+                },
+                512, 20.dp,
+            )
         }
         Spacer(Modifier.height(16.dp))
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -978,9 +992,9 @@ fun RightPane(state: AppState, modifier: Modifier) {
         }
         Spacer(Modifier.height(14.dp))
         Row {
-            GoButton("歌词", primary = tab == 0) { tab = 0 }
+            GoButton("歌词", primary = tab == 0) { state.rightTab = 0 }
             Spacer(Modifier.width(8.dp))
-            GoButton("播放列表 ${state.queue.size}", primary = tab == 1) { tab = 1 }
+            GoButton("播放列表 ${state.queue.size}", primary = tab == 1) { state.rightTab = 1 }
         }
         Spacer(Modifier.height(8.dp))
         Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(BgColor)) {
@@ -1082,6 +1096,130 @@ fun QualityMenu(state: AppState) {
 // =====================================================================
 
 /** 更新弹窗：发现新版本时显示，可选应用内更新 / 应用外更新 / 取消 */
+/** 全屏播放器的封面位图（大图 + 背景模糊共用一张） */
+@Composable
+private fun rememberCoverBitmap(ref: String?, size: Int = 256): androidx.compose.ui.graphics.ImageBitmap? {
+    val src = coverRef(ref)
+    val bmp by androidx.compose.runtime.produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, src) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            if (src.isNullOrBlank()) null else Images.get(src, size)?.bmp
+        }
+    }
+    return bmp
+}
+
+/**
+ * 全屏播放器（桌面端 / 横屏）：
+ * 背景是模糊放大的专辑封面，左半边是播放器区
+ * （大封面 → 歌手 → 专辑名 → 单色进度条 → 控制按钮），
+ * 右半边是中心旋转式歌词。
+ */
+@Composable
+fun FullPlayerOverlay(state: AppState) {
+    val song = state.currentSong ?: return
+    val bmp = rememberCoverBitmap(song.coverUrl, 256)
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        // 背景：模糊放大的专辑封面
+        if (bmp != null) {
+            Image(
+                bmp, null,
+                Modifier.fillMaxSize().blur(48.dp),
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            )
+        }
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)))
+        Column(Modifier.fillMaxSize().padding(20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconBtn(Icons.Outlined.Close, "关闭") { state.closeFullPlayer() }
+                Spacer(Modifier.width(8.dp))
+                Txt("正在播放", 15, color = Color.White, weight = FontWeight.SemiBold)
+                Spacer(Modifier.weight(1f))
+                IconBtn(Icons.Outlined.Download, "下载", tint = Color.White) { state.download(listOf(song)) }
+                IconBtn(Icons.Outlined.PlaylistAdd, "加入歌单", tint = Color.White) {
+                    state.pickRequest(listOf(song.ssid), song.title, song.coverUrl)
+                }
+                QualityMenu(state)
+            }
+            Row(Modifier.weight(1f).fillMaxWidth()) {
+                // ---------- 左：播放器 ----------
+                BoxWithConstraints(
+                    Modifier.weight(1f).fillMaxHeight().padding(end = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val coverSize = minOf(maxWidth * 0.58f, maxHeight * 0.60f)
+                    Column(
+                        Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Txt(song.title, 20, color = Color.White, weight = FontWeight.Bold, maxLines = 1)
+                        Spacer(Modifier.height(10.dp))
+                        Cover(song.coverUrl, Modifier.size(coverSize), 512, 16.dp)
+                        Spacer(Modifier.height(12.dp))
+                        // 第一行小字：歌手
+                        Txt(song.artist, 13, color = Color.White.copy(alpha = 0.72f), maxLines = 1)
+                        Spacer(Modifier.height(2.dp))
+                        // 第二行：专辑名
+                        Txt(
+                            song.album.ifBlank { "未知专辑" }, 15,
+                            color = Color.White, maxLines = 1,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        SimpleSeekBar(state.positionMs, state.durationMs) { state.seek(it) }
+                        Spacer(Modifier.height(2.dp))
+                        Row(Modifier.fillMaxWidth(0.92f)) {
+                            Txt(fmt(state.positionMs), 11, color = Color.White.copy(alpha = 0.6f))
+                            Spacer(Modifier.weight(1f))
+                            Txt(fmt(state.durationMs), 11, color = Color.White.copy(alpha = 0.6f))
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        // 上一首 / 播放 / 下一首 / 播放列表 / 播放方式
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 40.dp, tint = Color.White) { state.prev() }
+                            Spacer(Modifier.width(6.dp))
+                            Box(
+                                Modifier.size(56.dp).clip(CircleShape).background(Color.White)
+                                    .clickable { state.toggle() },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                androidx.compose.material3.Icon(
+                                    if (state.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                                    "播放/暂停", tint = Color.Black, modifier = Modifier.size(28.dp),
+                                )
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            IconBtn(Icons.Outlined.SkipNext, "下一首", size = 40.dp, tint = Color.White) { state.next() }
+                            Spacer(Modifier.width(6.dp))
+                            IconBtn(Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表", size = 34.dp, tint = Color.White) {
+                                // 回到主界面的播放列表分页
+                                state.rightTab = 1
+                                state.closeFullPlayer()
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            IconBtn(
+                                when (state.playMode) {
+                                    1 -> Icons.Outlined.Shuffle
+                                    2 -> Icons.Outlined.RepeatOne
+                                    else -> Icons.Outlined.Repeat
+                                },
+                                "播放方式", size = 34.dp, tint = Color.White,
+                            ) { state.cycleMode() }
+                        }
+                    }
+                }
+                // ---------- 右：中心旋转式歌词 ----------
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    WheelLyrics(state.lyric, state.lyricIndex, Modifier.fillMaxSize()) { state.seek(it) }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun UpdateDialog(state: AppState) {
     val info = state.updateInfo ?: return

@@ -1145,6 +1145,15 @@ class AppState {
         }.onFailure { toast("打不开链接：" + (it.message ?: "")) }
     }
 
+    /** 全屏播放器（横屏 / 桌面端用的双栏布局） */
+    var showFullPlayer by mutableStateOf(false)
+
+    fun openFullPlayer() { showFullPlayer = true }
+    fun closeFullPlayer() { showFullPlayer = false }
+
+    /** 右栏当前分页：0 歌词 1 播放列表 */
+    var rightTab by mutableStateOf(0)
+
     /** 简繁转换模式：0 简体 / 1 香港繁体 / 2 仅搜索统一 / 3 不转换 */
     var zhConvert by mutableIntStateOf(Prefs.zhConvert)
         private set

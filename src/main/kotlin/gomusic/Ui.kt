@@ -1,5 +1,10 @@
 package gomusic
 
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
+
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -10,6 +15,7 @@ import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +35,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,16 +49,24 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.material3.Text
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -352,4 +369,148 @@ fun ToastHost(msg: String?) {
                 .background(SurfaceHiColor).padding(horizontal = 16.dp, vertical = 10.dp),
         ) { Txt(msg, 14) }
     }
+}
+
+/**
+ * 中心旋转式歌词（滚轮）。
+ *
+ * 当前行固定在正中，其余行绕一个圆柱面分布在上下两侧：
+ * 越远的行越小、越淡、绕 X 轴转得越多，形成滚轮的透视感。
+ * 上下滑动可以旋转选行，点某一行直接跳到那一句。
+ */
+@Composable
+fun WheelLyrics(
+    lines: List<LrcLine>,
+    idx: Int,
+    modifier: Modifier = Modifier,
+    onSeek: (Long) -> Unit,
+) {
+    if (lines.isEmpty()) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
+        }
+        return
+    }
+    val scope = rememberCoroutineScope()
+    val density = androidx.compose.ui.unit.LocalDensity.current
+    val rowH = with(density) { 52.dp.toPx() }
+    // 每行占的圆心角：越小排列越平，越大透视越明显
+    val angleDeg = 11f
+    val angleRad = angleDeg * 0.017453292f
+    val radius = rowH / sin(angleRad)
+    val offset = remember { Animatable(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    var manualUntil by remember { mutableLongStateOf(0L) }
+    val last = lines.lastIndex.coerceAtLeast(0).toFloat()
+
+    LaunchedEffect(idx, lines.size) {
+        if (idx >= 0 && !dragging && System.currentTimeMillis() > manualUntil) {
+            offset.animateTo(idx.toFloat().coerceIn(0f, last), spring(stiffness = Spring.StiffnessLow))
+        }
+    }
+
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        Box(
+            Modifier.fillMaxSize()
+                .pointerInput(lines) {
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            dragging = true
+                            manualUntil = Long.MAX_VALUE
+                            scope.launch { offset.stop() }
+                        },
+                        onDragEnd = {
+                            dragging = false
+                            // 松手后对齐到最近的一行，冷却 4 秒再恢复跟播
+                            manualUntil = System.currentTimeMillis() + 4000
+                            scope.launch {
+                                offset.animateTo(
+                                    offset.value.roundToInt().toFloat().coerceIn(0f, last),
+                                    spring(stiffness = Spring.StiffnessLow),
+                                )
+                            }
+                        },
+                        onDragCancel = {
+                            dragging = false
+                            manualUntil = System.currentTimeMillis() + 4000
+                        },
+                        onVerticalDrag = { _, dragAmount ->
+                            val d = -dragAmount / rowH
+                            scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, last)) }
+                        },
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            val cur = offset.value
+            val span = 7
+            val from = (cur - span).toInt().coerceAtLeast(0)
+            val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
+            for (i in from..to) {
+                val d = i - cur
+                val theta = d * angleRad
+                val y = radius * sin(theta)
+                val depth = cos(theta).coerceAtLeast(0f)
+                val fade = (1f - abs(d) / (span + 1f)).coerceIn(0f, 1f)
+                val isCur = abs(d) < 0.5f
+                Text(
+                    zhText(lines[i].text),
+                    Modifier
+                        .graphicsLayer {
+                            translationY = y
+                            rotationX = d * angleDeg
+                            scaleX = 0.88f + 0.12f * depth
+                            scaleY = 0.88f + 0.12f * depth
+                            alpha = 0.16f + 0.84f * fade
+                            transformOrigin = TransformOrigin(0.5f, 0.5f)
+                        }
+                        .clickable(enabled = lines[i].timeMs >= 0) {
+                            manualUntil = System.currentTimeMillis() + 6000
+                            onSeek(lines[i].timeMs)
+                        }
+                        .padding(horizontal = 28.dp, vertical = 3.dp),
+                    color = Color.White,
+                    fontSize = if (isCur) 19.sp else 16.sp,
+                    lineHeight = if (isCur) 30.sp else 26.sp,
+                    fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** 简洁版单色进度条：细轨道 + 白色进度，可拖动 */
+@Composable
+fun SimpleSeekBar(position: Long, duration: Long, onSeek: (Long) -> Unit) {
+    var drag by remember { mutableStateOf<Float?>(null) }
+    var w by remember { mutableIntStateOf(1) }
+    val frac = drag ?: if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+    Box(
+        Modifier.fillMaxWidth(0.92f).height(20.dp)
+            .onSizeChanged { w = it.width.coerceAtLeast(1) }
+            .pointerInput(duration) {
+                detectDragGestures(
+                    onDragStart = { o -> drag = (o.x / w).coerceIn(0f, 1f) },
+                    onDrag = { change, _ -> drag = (change.position.x / w).coerceIn(0f, 1f) },
+                    onDragEnd = {
+                        drag?.let { f -> if (duration > 0) onSeek((f * duration).toLong()) }
+                        drag = null
+                    },
+                    onDragCancel = { drag = null },
+                )
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Box(Modifier.fillMaxWidth().height(3.dp).background(Color.White.copy(alpha = 0.22f), CircleShape))
+        Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(3.dp).background(Color.White, CircleShape))
+    }
+}
+
+/** 毫秒 -> mm:ss */
+fun fmt(ms: Long): String {
+    val v = (ms.coerceAtLeast(0)) / 1000
+    return "%02d:%02d".format(v / 60, v % 60)
 }
