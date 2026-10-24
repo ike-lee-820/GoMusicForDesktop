@@ -77,7 +77,9 @@ object Netease {
         val url = sb.toString()
         NmLog.req(url)
         var last: Exception? = null
-        repeat(2) { i ->
+        // 失败自动重试：网络抖动 / 服务端偶发错误时多试几次，间隔递增
+        val delays = longArrayOf(400, 900, 1600)
+        for (i in 0..delays.size) {
             try {
                 val req = Request.Builder().url(url).header("Connection", "close").build()
                 Api.client.newCall(req).execute().use { r ->
@@ -87,12 +89,14 @@ object Netease {
                         throw IOException("HTTP ${r.code} ${if (t.isBlank()) "(空响应)" else ""}")
                     }
                     val el = runCatching { json.parseToJsonElement(t) }.getOrNull()
-                    return if (el is JsonObject) el else JsonObject(emptyMap())
+                    if (el is JsonObject) return el
+                    throw IOException("响应不是 JSON 对象")
                 }
             } catch (e: Exception) {
                 last = e
+                NmLog.note("请求第 ${i + 1} 次失败：$path -> ${e.message}")
                 NmLog.err(url, e)
-                if (i == 0) runCatching { Thread.sleep(400) }
+                if (i < delays.size) runCatching { Thread.sleep(delays[i]) }
             }
         }
         NmLog.note("请求最终失败：$path -> ${last?.message}")
@@ -418,15 +422,17 @@ object Netease {
     }
 
     /**
-     * 专辑 / 歌手的歌曲列表。
-     * 专辑走 /album，歌手走 /artist/songs；拿到后再用 song/detail 补全。
+     * 专辑 / 歌手的歌曲列表。歌手支持 offset 分页（滑到底继续加载）
      */
-    fun songsOf(kind: String, id: Long, limit: Int = 50): List<Song> {
-        NmLog.note("取 $kind 的歌曲 id=$id")
+    fun songsOf(kind: String, id: Long, limit: Int = 30, offset: Int = 0): List<Song> {
+        NmLog.note("取 $kind 的歌曲 id=$id offset=$offset")
         val root = if (kind == "album") {
             get("/album", "id" to id.toString())
         } else {
-            get("/artist/songs", "id" to id.toString(), "limit" to limit.toString(), "offset" to "0")
+            get(
+                "/artist/songs", "id" to id.toString(),
+                "limit" to limit.toString(), "offset" to offset.toString(),
+            )
         }
         val arr = resultArray(root, "songs")
         if (arr.isEmpty()) {
@@ -436,6 +442,158 @@ object Netease {
             return enrich(alt.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
         }
         return enrich(arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
+    }
+
+    /** 歌手的专辑列表（分页） */
+    fun artistAlbums(id: Long, limit: Int = 30, offset: Int = 0): List<Group> {
+        val root = get(
+            "/artist/album", "id" to id.toString(),
+            "limit" to limit.toString(), "offset" to offset.toString(),
+        )
+        val arr = resultArray(root, "hotAlbums").ifEmpty { resultArray(root, "albums") }
+        NmLog.note("歌手专辑 id=$id offset=$offset 返回 ${arr.size} 条")
+        return arr.mapNotNull { o ->
+            val aid = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (aid <= 0L || name.isBlank()) return@mapNotNull null
+            Group(
+                title = name,
+                subtitle = o.obj("artist")?.str("name") ?: o.obj("ar")?.str("name") ?: "",
+                cover = pic(o.str("picUrl", "blurPicUrl", "pic")),
+                songs = emptyList(),
+                album = name,
+                source = SRC_NETEASE,
+                nmId = aid,
+                nmKind = "album",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 歌手详情：拿歌手自己的头像，避免误用专辑封面 */
+    fun artistDetail(id: Long): Group? {
+        val root = get("/artist/detail", "id" to id.toString())
+        val d = root.obj("data") ?: return null
+        val artist = d.obj("artist") ?: return null
+        val aid = idOf(artist)
+        val name = artist.str("name").orEmpty()
+        if (aid <= 0L || name.isBlank()) return null
+        return Group(
+            title = name,
+            subtitle = "网易云歌手",
+            cover = pic(artist.str("picUrl", "img1v1Url", "cover")),
+            songs = emptyList(),
+            artist = name,
+            source = SRC_NETEASE,
+            nmId = aid,
+            nmKind = "artist",
+        )
+    }
+
+    /** 专辑详情：拿歌手名，让专辑页副标题显示真实歌手 */
+    fun albumArtist(id: Long): String? {
+        val root = get("/album", "id" to id.toString())
+        val d = root.obj("album") ?: return null
+        d.obj("artist")?.str("name")?.takeIf { it.isNotBlank() }?.let { return it }
+        val arr = (d["artists"] as? JsonElement)?.jsonArray ?: return null
+        return arr.firstNotNullOfOrNull { (it as? JsonObject)?.str("name")?.takeIf { n -> n.isNotBlank() } }
+    }
+
+    /**
+     * 探测这首歌实际有哪些音质：每个档位都试一次，能拿到地址的才返回。
+     * 每个档位只走一次 v1 基础请求，避免探测一次就发几十个请求。
+     */
+    fun availableLevels(id: Long): List<String> {
+        val out = LinkedHashSet<String>()
+        for (lv in NM_LEVELS) {
+            val r = runCatching {
+                get("/song/url/v1", "id" to id.toString(), "level" to lv)
+            }.getOrNull() ?: continue
+            if (r.code() != 200) continue
+            val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+            val u = first?.str("url")
+                ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
+            if (!u.isNullOrBlank()) out.add(lv)
+        }
+        NmLog.note("音质探测 id=$id -> ${out.toList()}")
+        return out.toList()
+    }
+
+    // ================= 首页 =================
+
+    /** 每日推荐歌曲（需要登录） */
+    fun topArtists(limit: Int = 30, offset: Int = 0): List<Group> {
+        val root = get("/top/artists", "offset" to offset.toString(), "limit" to limit.toString())
+        val arr = resultArray(root, "artists")
+            .ifEmpty { resultArray(root, "list") }
+        NmLog.note("热门歌手 offset=$offset 返回 ${arr.size} 条")
+        return arr.mapNotNull { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            Group(
+                title = name,
+                subtitle = "网易云歌手",
+                cover = pic(o.str("picUrl", "img1v1Url", "pic")),
+                songs = emptyList(),
+                artist = name,
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "artist",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 最新专辑（新碟上架） /album/newest */
+    fun newestAlbums(limit: Int = 30): List<Group> {
+        val root = get("/album/newest")
+        val arr = resultArray(root, "albums")
+        NmLog.note("最新专辑返回 ${arr.size} 条")
+        return arr.take(limit).mapNotNull { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            val ar = o.obj("artist") ?: o.obj("ar")
+            Group(
+                title = name,
+                subtitle = ar?.str("name") ?: "",
+                cover = pic(o.str("picUrl", "blurPicUrl", "pic")),
+                songs = emptyList(),
+                artist = ar?.str("name") ?: "",
+                album = name,
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "album",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 专辑详情：拿歌手名，让专辑页副标题显示真实歌手 */
+    fun albumArtist(id: Long): String? {
+        val root = get("/album", "id" to id.toString())
+        val d = root.obj("album") ?: return null
+        d.obj("artist")?.str("name")?.takeIf { it.isNotBlank() }?.let { return it }
+        val arr = (d["artists"] as? JsonElement)?.jsonArray ?: return null
+        return arr.firstNotNullOfOrNull { (it as? JsonObject)?.str("name")?.takeIf { n -> n.isNotBlank() } }
+    }
+
+    /** 歌手详情：拿歌手自己的头像，避免误用专辑封面 */
+    fun artistDetail(id: Long): Group? {
+        val root = get("/artist/detail", "id" to id.toString())
+        val d = root.obj("data") ?: return null
+        val artist = d.obj("artist") ?: return null
+        val aid = idOf(artist)
+        val name = artist.str("name").orEmpty()
+        if (aid <= 0L || name.isBlank()) return null
+        return Group(
+            title = name,
+            subtitle = "网易云歌手",
+            cover = pic(artist.str("picUrl", "img1v1Url", "cover")),
+            songs = emptyList(),
+            artist = name,
+            source = SRC_NETEASE,
+            nmId = aid,
+            nmKind = "artist",
+        )
     }
 
     // ================= 首页 =================

@@ -81,6 +81,12 @@ import kotlin.math.roundToInt
 @Composable
 fun App(state: AppState) {
     GoTheme(state.primary) {
+        // 简繁转换：设置一改，界面与文字全部跟着变
+        androidx.compose.runtime.CompositionLocalProvider(
+            LocalZhMode provides state.zhConvert,
+        ) {
+            // 启动时静默检查一次更新，有新版就弹窗
+            LaunchedEffect(Unit) { state.autoCheckUpdate() }
         Box(Modifier.fillMaxSize().background(BgColor)) {
             Row(Modifier.fillMaxSize()) {
                 // 四个标签移到左侧侧栏（手机端是底部导航栏）
@@ -95,11 +101,18 @@ fun App(state: AppState) {
                 if (state.nmOn && !state.nmReady) NmLoginDialog(state) else SettingsDialog(state)
             }
             if (state.showHistory) HistoryDialog(state)
+            // 更新弹窗放在最外层：盖住其他界面
+            if (state.showUpdate) UpdateDialog(state)
             if (state.nmPage != null) {
                 Box(
                     Modifier.fillMaxSize().background(BgColor),
                 ) { NmSongsPage(state) }
             }
+            // 详情页「添加至歌单」：复用已有的歌单选择弹窗
+            state.pendingPick?.let { req ->
+                PickDialog(state, req.name, req.ids) { state.dismissPick() }
+            }
+        }
         }
     }
 }
@@ -360,6 +373,21 @@ fun HistoryDialog(state: AppState) {
     }
 }
 
+/** 首次搜索的大加载动画：第一次结果回来前盖住列表 */
+@Composable
+fun FirstSearchLoading(text: String) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator(
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(36.dp), strokeWidth = 3.dp,
+            )
+            Spacer(Modifier.height(12.dp))
+            Txt(text, 13, color = MutedColor)
+        }
+    }
+}
+
 @Composable
 fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
     val q = state.query.trim()
@@ -380,11 +408,18 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
         else -> when (state.tab) {
             TAB_HOME -> HomeTab(state)
             TAB_SONGS -> {
-                // 搜索时触发网易云搜索（防抖在 state 内）
-                LaunchedEffect(q, state.nmReady) { state.searchNetease(q) }
-                val local = state.ranked().filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
+                // 搜索时触发网易云搜索（防抖在 state 内）；只搜歌曲这一类
+                LaunchedEffect(q, state.nmReady) { state.searchNetease(q, 0) }
+                val zhMode = LocalZhMode.current
+                val local = state.ranked().filter {
+                    q.isEmpty() || localMatch(it.title, q, zhMode) ||
+                        localMatch(it.artist, q, zhMode) || localMatch(it.album, q, zhMode)
+                }
                 val list = state.mix(local, state.nmSongs)
-                Column(Modifier.fillMaxSize()) {
+                // 第一次搜索完成前用大加载动画，不先显示结果
+                if (state.nmSearching && state.nmSongs.isEmpty()) {
+                    FirstSearchLoading("正在搜索网易云曲库")
+                } else Column(Modifier.fillMaxSize()) {
                     if (q.isEmpty() && state.historySongs.isNotEmpty()) HistoryRow(state)
                     if (state.nmSearching) {
                         Row(
@@ -400,16 +435,24 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
                         }
                     }
                     Box(Modifier.weight(1f)) {
-                        SongList(state, list, onPick, onReachEnd = if (state.nmHasMore) ({ state.loadMoreNetease() }) else null)
+                        SongList(state, list, onPick, onReachEnd = if (state.nmHasMore) ({ state.loadMoreNetease(0) }) else null)
                     }
                 }
             }
             TAB_ALBUMS -> {
-                LaunchedEffect(q, state.nmReady) { state.searchNetease(q) }
-                val local = state.albumGroups().filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
+                LaunchedEffect(q, state.nmReady) { state.searchNetease(q, 1) }
+                val zhMode = LocalZhMode.current
+                val local = state.albumGroups().filter {
+                    q.isEmpty() || localMatch(it.title, q, zhMode) || localMatch(it.artist, q, zhMode)
+                }
+                // 去重：同名专辑可能属于不同歌手，key 必须唯一
                 val groups = state.mix(local, state.nmAlbums)
+                    .distinctBy { if (it.nmId > 0) "nm${it.nmId}" else "loc${it.title}|${it.artist}" }
+                if (state.nmSearching && state.nmAlbums.isEmpty()) {
+                    FirstSearchLoading("正在搜索网易云专辑")
+                } else {
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
-                    itemsIndexed(groups, key = { i, g -> if (g.nmId > 0) "nm${'$'}{g.nmId}" else "loc${'$'}{g.title}#$i" }) { _, g ->
+                    itemsIndexed(groups, key = { i, g -> if (g.nmId > 0) "nm${'$'}{g.nmId}#$i" else "loc${'$'}{g.title}|${'$'}{g.artist}#$i" }) { _, g ->
                         GroupRow(
                             titleWithSource(g.title, g.source), g.subtitle, g.cover,
                             onClick = {
@@ -419,11 +462,17 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
                         ) { onPick(g.songs.map { it.ssid }, g.title) }
                     }
                 }
+                }
             }
             TAB_ARTISTS -> {
-                LaunchedEffect(q, state.nmReady) { state.searchNetease(q) }
-                val local = state.artistGroups().filter { q.isEmpty() || it.title.contains(q, true) }
+                LaunchedEffect(q, state.nmReady) { state.searchNetease(q, 2) }
+                val zhMode = LocalZhMode.current
+                val local = state.artistGroups().filter { q.isEmpty() || localMatch(it.title, q, zhMode) }
                 val groups = state.mix(local, state.nmArtists)
+                    .distinctBy { if (it.nmId > 0) "nm${it.nmId}" else "loc${it.title}" }
+                if (state.nmSearching && state.nmArtists.isEmpty()) {
+                    FirstSearchLoading("正在搜索网易云歌手")
+                } else {
                 LazyVerticalGrid(
                     GridCells.Adaptive(150.dp),
                     Modifier.fillMaxSize(),
@@ -441,6 +490,7 @@ fun TabList(state: AppState, onPick: (List<String>, String) -> Unit) {
                             },
                         ) { onPick(g.songs.map { it.ssid }, g.title) }
                     }
+                }
                 }
             }
             else -> PlaylistsTab(state, onPick)
@@ -490,6 +540,7 @@ fun SongList(state: AppState, list: List<Song>, onPick: (List<String>, String) -
                     if (state.isDownloaded(s.ssid)) "已下载" else "下载歌曲",
                     tint = if (state.isDownloaded(s.ssid)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                 ) { state.download(listOf(s)) }
+                IconBtn(Icons.AutoMirrored.Outlined.QueueMusic, "加入播放列表") { state.addToQueue(s) }
                 IconBtn(Icons.Outlined.PlaylistAdd, "加入歌单") { onPick(listOf(s.ssid), s.title) }
             }
         }
@@ -742,9 +793,17 @@ fun PlaylistPage(state: AppState, p: Page.PlaylistPage, onPick: (List<String>, S
 @Composable
 fun PlaylistsTab(state: AppState, onPick: (List<String>, String) -> Unit) {
     var creating by remember { mutableStateOf(false) }
+    // 歌单导入 / 导出放在歌单总览页，合并成两个按钮
+    var importing by remember { mutableStateOf(false) }
+    var exporting by remember { mutableStateOf(false) }
+    var exportPicked by remember { mutableStateOf(setOf<String>()) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
             GoButton("新建歌单", primary = true) { creating = true }
+            Spacer(Modifier.width(8.dp))
+            GoButton("导入") { importing = true }
+            Spacer(Modifier.width(8.dp))
+            GoButton("导出") { exportPicked = emptySet(); exporting = true }
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
             items(state.playlists, key = { it.id }) { pl ->
@@ -758,6 +817,113 @@ fun PlaylistsTab(state: AppState, onPick: (List<String>, String) -> Unit) {
         }
     }
     if (creating) NameDialog("新建歌单", "", { creating = false }) { state.createPlaylist(it); creating = false }
+    // 导入：粘贴还原字符（可多行，一次导入多个）
+    if (importing) ImportPlaylistDialog(state) { importing = false }
+    // 导出：勾选歌单（可多选）后复制还原字符
+    if (exporting) ExportPlaylistDialog(state, exportPicked, { exporting = false }) { exportPicked = it }
+}
+
+/** 导入歌单：粘贴还原字符；支持多行一次导入多个，重名自动改名 */
+@Composable
+fun ImportPlaylistDialog(state: AppState, onDismiss: () -> Unit) {
+    var t by remember { mutableStateOf("") }
+    NameDialogLike(
+        title = "导入歌单",
+        hint = "粘贴以 GM1: 开头的还原字符（多个歌单可一次贴多行）",
+        value = t,
+        onValue = { t = it },
+        onDismiss = onDismiss,
+        onOk = { if (t.isNotBlank()) state.importPlaylist(t) },
+    )
+}
+
+/** 导出歌单：勾选多个后生成还原字符并复制 */
+@Composable
+fun ExportPlaylistDialog(
+    state: AppState,
+    picked: Set<String>,
+    onDismiss: () -> Unit,
+    onPick: (Set<String>) -> Unit,
+) {
+    var confirmed by remember { mutableStateOf(false) }
+    val text = remember(confirmed, picked) {
+        if (!confirmed || picked.isEmpty()) null else state.exportPlaylists(picked.toList())
+    }
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)).clickable { onDismiss() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.widthIn(max = 480.dp).heightIn(max = 560.dp)
+                .clip(RoundedCornerShape(20.dp)).background(SurfaceColor)
+                .padding(16.dp).verticalScroll(rememberScrollState()),
+        ) {
+            Txt("导出歌单", 16, weight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+            Txt("可以勾选多个，一次导出；复制后发给别人，对方用「导入」粘贴", 12, color = MutedColor)
+            Spacer(Modifier.height(12.dp))
+            if (state.playlists.isEmpty()) {
+                Txt("还没有歌单", 13, color = MutedColor)
+            } else {
+                state.playlists.forEach { pl ->
+                    val sel = pl.id in picked
+                    Row(
+                        Modifier.fillMaxWidth().height(48.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (sel) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
+                            .clickable { confirmed = false; onPick(if (sel) picked - pl.id else picked + pl.id) }
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // 勾选框
+                        Box(
+                            Modifier.size(20.dp).clip(RoundedCornerShape(6.dp))
+                                .background(if (sel) MaterialTheme.colorScheme.primary else SurfaceHiColor),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (sel) {
+                                Box(
+                                    Modifier.size(9.dp).clip(RoundedCornerShape(2.dp))
+                                        .background(Color(0xFF1A1A1A)),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Txt(pl.name, 14, weight = FontWeight.Medium, maxLines = 1)
+                            Txt("${pl.songs.size} 首", 12, color = MutedColor, maxLines = 1)
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            when {
+                picked.isEmpty() -> Txt("先勾选要导出的歌单", 12, color = MutedColor)
+                text == null -> GoButton("生成还原字符（已选 ${picked.size} 个）", primary = true) { confirmed = true }
+                else -> {
+                    Box(
+                        Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState())
+                            .clip(RoundedCornerShape(8.dp)).background(SurfaceHiColor).padding(10.dp),
+                    ) { Txt(text, 11) }
+                    Spacer(Modifier.height(10.dp))
+                    GoButton("复制还原字符", primary = true) {
+                        copyToClipboard(text)
+                        state.toast("已复制 ${picked.size} 个歌单的还原字符")
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            GoButton("关闭") { onDismiss() }
+        }
+    }
+}
+
+/** 复制文本到系统剪贴板 */
+private fun copyToClipboard(text: String) {
+    runCatching {
+        val sel = java.awt.datatransfer.StringSelection(text)
+        java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(sel, null)
+    }
 }
 
 // =====================================================================
@@ -842,7 +1008,7 @@ fun LyricView(state: AppState) {
         itemsIndexed(lines) { i, l ->
             val cur = i == idx
             Txt(
-                l.text, if (cur) 17 else 15,
+                zhText(l.text), if (cur) 17 else 15,
                 Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { if (l.timeMs >= 0) state.seek(l.timeMs) },
                 weight = if (cur) FontWeight.Bold else FontWeight.Normal,
                 color = if (cur) MaterialTheme.colorScheme.primary else MutedColor,
@@ -856,6 +1022,19 @@ fun QueueView(state: AppState) {
     if (state.queue.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Txt("播放列表为空", 13, color = MutedColor) }
         return
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Txt("播放列表（${state.queue.size}）", 13, Modifier.weight(1f), FontWeight.SemiBold)
+        // 一键清空：保留正在播放的那一首，其余全部移除
+        Txt(
+            "清空", 12,
+            Modifier.clip(RoundedCornerShape(50)).background(SurfaceHiColor)
+                .clickable { state.clearQueue() }.padding(horizontal = 10.dp, vertical = 4.dp),
+            color = MaterialTheme.colorScheme.primary,
+        )
     }
     LazyColumn(Modifier.fillMaxSize()) {
         itemsIndexed(state.queue, key = { _, s -> s.ssid }) { i, s ->
@@ -901,6 +1080,91 @@ fun QualityMenu(state: AppState) {
 // =====================================================================
 // 弹层
 // =====================================================================
+
+/** 更新弹窗：发现新版本时显示，可选应用内更新 / 应用外更新 / 取消 */
+@Composable
+fun UpdateDialog(state: AppState) {
+    val info = state.updateInfo ?: return
+    val prog = state.updateProgress
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.widthIn(max = 480.dp).clip(RoundedCornerShape(20.dp))
+                .background(SurfaceColor).padding(20.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Txt("发现新版本", 18, weight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Txt(state.appVersion, 13, color = MutedColor)
+                Spacer(Modifier.width(8.dp))
+                Txt("→", 13, color = MutedColor)
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier.clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                ) { Txt(info.latest, 13, color = MaterialTheme.colorScheme.primary, weight = FontWeight.SemiBold) }
+            }
+            if (info.size > 0) {
+                Spacer(Modifier.height(6.dp))
+                Txt("安装包 " + "%.1f".format(info.size / 1024f / 1024f) + " MB", 12, color = MutedColor)
+            }
+            Spacer(Modifier.height(14.dp))
+            if (info.notes.isNotBlank()) {
+                Box(
+                    Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState())
+                        .clip(RoundedCornerShape(12.dp)).background(SurfaceHiColor).padding(12.dp),
+                ) { Txt(info.notes, 12) }
+                Spacer(Modifier.height(14.dp))
+            }
+            if (prog != null) {
+                val (done, total) = prog
+                Txt(
+                    "正在下载… " + "%.1f".format(done / 1024f / 1024f) +
+                        (if (total > 0) " / " + "%.1f".format(total / 1024f / 1024f) + " MB" else " MB"),
+                    13, color = MutedColor,
+                )
+                Spacer(Modifier.height(8.dp))
+                if (total > 0) {
+                    // 自绘进度条：不依赖 material3 不同版本的 API 差异
+                    Box(
+                        Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
+                            .background(SurfaceHiColor),
+                    ) {
+                        Box(
+                            Modifier.fillMaxHeight()
+                                .fillMaxWidth((done.toFloat() / total).coerceIn(0f, 1f))
+                                .background(MaterialTheme.colorScheme.primary),
+                        )
+                    }
+                } else {
+                    CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(28.dp), strokeWidth = 3.dp,
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+            } else {
+                GoButton("应用内更新（推荐）", primary = true) { state.updateInApp() }
+                Spacer(Modifier.height(6.dp))
+                Txt("下载安装包后由系统打开安装", 11, color = MutedColor)
+                Spacer(Modifier.height(14.dp))
+                GoButton("应用外更新") {
+                    val u = state.updateByBrowser()
+                    if (u != null) state.openUrl(u)
+                }
+                Spacer(Modifier.height(6.dp))
+                Txt("用浏览器打开下载页，经 gh-proxy 加速", 11, color = MutedColor)
+            }
+            Spacer(Modifier.height(14.dp))
+            GoButton("取消") { state.closeUpdate() }
+        }
+    }
+}
 
 @Composable
 fun SettingsDialog(state: AppState) {
@@ -975,6 +1239,54 @@ fun SettingsDialog(state: AppState) {
                 Spacer(Modifier.height(6.dp))
                 Txt("请求日志：${NmLog.path()}", 11, color = MutedColor)
             }
+            Spacer(Modifier.height(16.dp))
+
+            // ---------- 简繁转换 ----------
+            Txt("简繁转换", 15, weight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            val zhOpts = listOf(
+                ZhConvert.TO_SIMPLE to "转换成简体",
+                ZhConvert.TO_TRAD to "转换成繁体",
+                ZhConvert.SEARCH_ONLY to "仅搜索统一",
+                ZhConvert.OFF to "不转换",
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                zhOpts.forEach { (m, n) ->
+                    val sel = state.zhConvert == m
+                    Box(
+                        Modifier.clip(RoundedCornerShape(50))
+                            .background(if (sel) MaterialTheme.colorScheme.primary else SurfaceHiColor)
+                            .clickable { state.chooseZhConvert(m) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) { Txt(n, 13, color = if (sel) Color(0xFF1A1A1A) else MutedColor) }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Txt(
+                when (state.zhConvert) {
+                    ZhConvert.TO_TRAD -> "歌名、歌词、歌手与界面文字统一显示香港繁体"
+                    ZhConvert.SEARCH_ONLY -> "界面不转换；搜索本站时简体与繁体的结果一起返回"
+                    ZhConvert.OFF -> "保持原样，不做任何转换"
+                    else -> "歌名、歌词、歌手与界面文字统一显示简体"
+                },
+                11, color = MutedColor,
+            )
+            Spacer(Modifier.height(16.dp))
+
+            // ---------- 检查更新 ----------
+            Txt("检查更新", 15, weight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GoButton(
+                    if (state.updateChecking) "检查中…" else "检查更新",
+                    primary = state.updateInfo?.hasUpdate == true,
+                ) { state.checkUpdate() }
+                if (state.updateInfo?.hasUpdate == true) {
+                    GoButton("更新", primary = true) { state.showUpdate = true }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Txt("更新检查经 gh-proxy.com 加速", 11, color = MutedColor)
             Spacer(Modifier.height(16.dp))
 
             Txt("播放内核", 15, weight = FontWeight.SemiBold)
@@ -1080,6 +1392,48 @@ fun PickDialog(state: AppState, title: String, ids: List<String>, onClose: () ->
 }
 
 @Composable
+/** 带说明文字的输入弹窗（导入歌单还原字符用） */
+@Composable
+fun NameDialogLike(
+    title: String,
+    hint: String,
+    value: String,
+    onValue: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onOk: () -> Unit,
+) {
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)).clickable { onDismiss() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(Modifier.widthIn(max = 420.dp).clip(RoundedCornerShape(20.dp)).background(SurfaceColor).padding(20.dp)) {
+            Txt(title, 16, weight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            Txt(hint, 12, color = MutedColor)
+            Spacer(Modifier.height(12.dp))
+            Box(
+                Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(12.dp))
+                    .background(SurfaceHiColor).padding(horizontal = 12.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                androidx.compose.foundation.text.BasicTextField(
+                    value = value, onValueChange = onValue, singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                GoButton("取消") { onDismiss() }
+                Spacer(Modifier.width(8.dp))
+                GoButton("确定", primary = true) { onOk(); onDismiss() }
+            }
+        }
+    }
+}
+
 fun NameDialog(title: String, initial: String, onClose: () -> Unit, onOk: (String) -> Unit) {
     var v by remember(initial) { mutableStateOf(initial) }
     Box(

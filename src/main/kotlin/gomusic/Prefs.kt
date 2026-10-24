@@ -42,6 +42,8 @@ data class PrefsFile(
     val downloads: List<DownloadRecord> = emptyList(),
     val quality: String = "normal",
     val playMode: Int = 0,
+    /** 简繁转换模式：0 简体 / 1 香港繁体 / 2 仅搜索统一 / 3 不转换 */
+    val zhConvert: Int = 0,
     val speed: Float = 1f,
     val themeColor: Long? = null,
     val nmEnabled: Boolean = false,
@@ -90,6 +92,14 @@ object Prefs {
     var downloads: List<DownloadRecord>
         get() = data.downloads
         set(v) { data = data.copy(downloads = v); save() }
+
+    /**
+     * 简繁转换模式：
+     * 0 转成简体（默认）/ 1 转成香港繁体 / 2 仅搜索统一 / 3 不转换
+     */
+    var zhConvert: Int
+        get() = data.zhConvert
+        set(v) { data = data.copy(zhConvert = v); save() }
 
     var quality: String
         get() = data.quality

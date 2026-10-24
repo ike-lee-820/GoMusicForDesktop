@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "de.myocd"
-version = "1.2.1"
+version = "1.3.0"
 
 // ---------- 平台相关依赖（FFmpeg 原生库 / OpenAL 原生库）----------
 // 只打当前系统的原生库，避免把 5 个平台的 so/dll/dylib 全塞进去（几百 MB）
@@ -47,6 +47,8 @@ val ffmpegPlat = (project.findProperty("ffmpeg.platform") as String?) ?: ffmpegC
 val joalPlat = (project.findProperty("joal.platform") as String?) ?: joalClassifier()
 
 dependencies {
+    // 简繁转换：转换到香港繁体用 opencc4j 的 ZhHkConverterUtil
+    implementation("com.github.houbb:opencc4j:1.14.0")
     implementation(compose.desktop.currentOs)
     implementation(compose.runtime)
     implementation(compose.foundation)
@@ -85,7 +87,7 @@ compose.desktop {
         mainClass = "gomusic.MainKt"
         nativeDistributions {
             packageName = "GoMusic"
-            packageVersion = "1.0.0"
+            packageVersion = "1.3.0"
             description = "GoMusic Desktop"
             vendor = "GoMusic"
             copyright = "GoMusic"

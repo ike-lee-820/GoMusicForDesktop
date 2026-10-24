@@ -28,6 +28,30 @@ const val SRC_NETEASE = "netease"
 /** 网易云歌曲在本地索引里的 ssid 前缀 */
 const val NM_PREFIX = "nm"
 
+/** 当前版本号（Updater.current() 读不到 version.txt 时的兜底） */
+const val APP_VERSION = "1.3.0"
+
+/** 网易云可选音质档位（从低到高） */
+val NM_LEVELS = listOf(
+    "standard", "higher", "exhigh", "lossless",
+    "hires", "jyeffect", "dolby", "vivid", "jymaster", "sky",
+)
+
+/** 网易云音质档位中文名 */
+fun nmLevelLabel(lv: String): String = when (lv) {
+    "standard" -> "标准 128k"
+    "higher" -> "较高 192k"
+    "exhigh" -> "极高 320k"
+    "lossless" -> "无损 FLAC"
+    "hires" -> "Hi-Res"
+    "jyeffect" -> "高清臻音"
+    "dolby" -> "杜比全景声"
+    "vivid" -> "臻音全景声"
+    "jymaster" -> "超清母带"
+    "sky" -> "沉浸环绕声"
+    else -> lv
+}
+
 /** 网易云 API 站 */
 const val NM_BASE = "https://mapi.myocd.de5.net"
 

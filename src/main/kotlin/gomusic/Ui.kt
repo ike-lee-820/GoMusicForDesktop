@@ -82,6 +82,38 @@ fun GoTheme(primary: Color, content: @Composable () -> Unit) {
     )
 }
 
+/** 简繁转换模式，默认转成简体 */
+val LocalZhMode = androidx.compose.runtime.compositionLocalOf { ZhConvert.TO_SIMPLE }
+
+/** 按设置转换显示文本 */
+@Composable
+fun zhText(s: String): String {
+    val m = LocalZhMode.current
+    return if (m == ZhConvert.OFF || m == ZhConvert.SEARCH_ONLY) s else ZhConvert.display(s, m)
+}
+
+/**
+ * 本站（本地曲库）搜索的匹配判断。
+ * 「仅搜索统一」时把文本与关键词都归一成简/繁各比一次，
+ * 这样用简体搜能出繁体结果、用繁体搜也能出简体结果，两种写法一起叠加回来。
+ */
+fun localMatch(text: String, q: String, mode: Int): Boolean {
+    if (q.isEmpty()) return true
+    if (text.contains(q, ignoreCase = true)) return true
+    if (mode != ZhConvert.SEARCH_ONLY) return false
+    val tq = ZhConvert.toSimple(q)
+    if (tq != q) {
+        if (ZhConvert.toSimple(text).contains(tq, ignoreCase = true)) return true
+        if (ZhConvert.toTrad(text).contains(tq, ignoreCase = true)) return true
+    }
+    val hq = ZhConvert.toTrad(q)
+    if (hq != q) {
+        if (ZhConvert.toSimple(text).contains(hq, ignoreCase = true)) return true
+        if (ZhConvert.toTrad(text).contains(hq, ignoreCase = true)) return true
+    }
+    return false
+}
+
 @Composable
 fun Txt(
     text: String,
@@ -92,8 +124,10 @@ fun Txt(
     maxLines: Int = Int.MAX_VALUE,
     align: TextAlign? = null,
 ) {
+    // 界面文字统一按简繁设置转换（「仅搜索统一 / 不转换」时原样显示）
+    val shown = zhText(text)
     androidx.compose.material3.Text(
-        text,
+        shown,
         modifier,
         color = color,
         fontSize = size.sp,
@@ -270,8 +304,8 @@ fun GoField(
  * 来源前缀：网易云曲库的结果在歌名 / 专辑名前加「(网)」，
  * 与本站曲库区分（不用图标、不用 emoji）。
  */
-fun titleWithSource(title: String, source: String): String =
-    if (source == SRC_NETEASE) "(网)$title" else title
+// 来源不再靠名字前缀区分，改为封面右下角叠图标，标题原样显示
+fun titleWithSource(title: String, source: String): String = title
 
 /** 自带进度条，避免依赖 material3 不同版本的 API 差异 */
 @Composable

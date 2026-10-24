@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
@@ -51,6 +52,8 @@ fun HomeTab(state: AppState) {
     val rec = state.homeRecommend
     val news = state.homeNewSongs
     val hots = state.homeHotWords
+    val topArtists = state.homeTopArtists
+    val newAlbums = state.homeNewAlbums
     val his = state.historySongs
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
         if (!state.nmReady) {
@@ -103,6 +106,32 @@ fun HomeTab(state: AppState) {
         }
         if (hots.isNotEmpty()) {
             item { HotSection(state, hots) }
+        }
+        // 热门歌手：横向卡片
+        if (topArtists.isNotEmpty()) {
+            item {
+                Column(Modifier.fillMaxWidth()) {
+                    HomeHeader("热门歌手", null) {}
+                    LazyRow(contentPadding = PaddingValues(start = 16.dp, end = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        items(topArtists, key = { "ta${it.nmId}" }) { g ->
+                            GroupCard(g.title, "", g.cover, onClick = { state.openNmGroupPublic(g) })
+                        }
+                    }
+                }
+            }
+        }
+        // 最新专辑（新碟上架）：横向卡片
+        if (newAlbums.isNotEmpty()) {
+            item {
+                Column(Modifier.fillMaxWidth()) {
+                    HomeHeader("最新专辑", null) {}
+                    LazyRow(contentPadding = PaddingValues(start = 16.dp, end = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        items(newAlbums, key = { "na${it.nmId}" }) { g ->
+                            GroupCard(g.title, g.subtitle, g.cover, onClick = { state.openNmGroupPublic(g) })
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -190,36 +219,133 @@ private fun HotSection(state: AppState, words: List<String>) {
     }
 }
 
-/** 网易云专辑 / 歌手的歌曲列表页 */
+/** 列表滑到底时触发一次（用于翻页）。放到列表外常驻，避免被回收 */
+@Composable
+private fun ReachEnd(hasMore: Boolean, lastIndex: Int, total: Int, onReachEnd: () -> Unit) {
+    if (!hasMore) return
+    LaunchedEffect(hasMore, lastIndex) {
+        if (lastIndex >= total - 3 && total > 0) onReachEnd()
+    }
+}
+
+/** 网易云专辑 / 歌手页。歌手有「歌曲」「专辑」两栏，各自滑到底加载下一页 */
 @Composable
 fun NmSongsPage(state: AppState) {
     val g = state.nmPage ?: return
+    val isArtist = g.nmKind == "artist"
+    val cover = state.nmPageCover ?: g.cover
+    val listState = rememberLazyListState()
+    // 显示时确保数据与当前页对应：从歌手页点进专辑 / 返回上层都要校正，
+    // 否则会出现「请求成功却不显示，要再进一次才有」
+    LaunchedEffect(g.nmKind, g.nmId) {
+        state.ensureNmPage(g.nmKind, g.nmId, g.title, g.cover, g.artist)
+    }
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Txt(titleWithSource(g.title, g.source), 18, Modifier.weight(1f), FontWeight.Bold)
+            Box(Modifier.size(56.dp)) {
+                CoverWithSource(cover, Modifier.fillMaxSize(), 8.dp, source = g.source)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Txt(g.title, 18, weight = FontWeight.Bold, maxLines = 1)
+                // 专辑显示歌手名；歌手页副标题留空
+                if (!isArtist && state.nmPageSubtitle.isNotBlank()) {
+                    Txt(state.nmPageSubtitle, 12, color = MutedColor, maxLines = 1)
+                }
+            }
+            // 歌单操作：整页新建歌单，或选已有歌单加入
+            if (state.nmPageSongs.isNotEmpty()) {
+                GoButton("新建歌单并添加") { state.createFromNmPage(g.title, cover) }
+                Spacer(Modifier.width(8.dp))
+                GoButton("添加至歌单") { state.pickRequest(state.nmPageSongs.map { it.ssid }, g.title, cover) }
+            }
             IconBtn(Icons.Outlined.Close, "关闭") { state.clearNmPage() }
         }
-        if (state.nmPageLoading) {
+        if (isArtist) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                GoButton("歌曲", primary = state.nmPageTab == 0) { state.chooseNmPageTab(0) }
+                Spacer(Modifier.width(8.dp))
+                GoButton("专辑", primary = state.nmPageTab == 1) { state.chooseNmPageTab(1) }
+            }
+        }
+        if (state.nmPageLoading && state.nmPageTab == 0) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
             }
+        } else if (isArtist && state.nmPageTab == 1) {
+            // ---------- 歌手：专辑栏 ----------
+            if (state.nmPageAlbumsLoading && state.nmPageAlbums.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                }
+            } else {
+                val albums = state.nmPageAlbums
+                if (albums.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Txt("没有拿到专辑", 14, color = MutedColor)
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 12.dp)) {
+                        itemsIndexed(albums, key = { i, a -> "nm${a.nmId}#$i" }) { _, a ->
+                            GroupRow(a.title, a.subtitle, a.cover, onClick = { state.openNmGroupPublic(a) })
+                        }
+                        if (state.nmPageAlbumsHasMore) {
+                            item { LoadingMoreRow("正在加载更多专辑") }
+                        }
+                    }
+                    // 专辑栏翻页：按可见项判断
+                    val li = listState.layoutInfo
+                    ReachEnd(
+                        hasMore = state.nmPageAlbumsHasMore && !state.nmPageLoadingMore,
+                        lastIndex = li.visibleItemsInfo.lastOrNull()?.index ?: -1,
+                        total = li.totalItemsCount,
+                    ) { state.loadMoreNmPage(1) }
+                }
+            }
         } else {
+            // ---------- 歌曲栏 ----------
             val list = state.nmPageSongs
             if (list.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Txt("没有拿到歌曲", 14, color = MutedColor)
                 }
             } else {
-                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
+                LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 12.dp)) {
                     itemsIndexed(list, key = { i, s -> "${s.ssid}#$i" }) { i, s ->
                         NmSongRow(state, s, i, list)
                     }
+                    if (state.nmPageSongsHasMore) {
+                        item { LoadingMoreRow("正在加载更多歌曲") }
+                    }
                 }
+                val li = listState.layoutInfo
+                ReachEnd(
+                    hasMore = state.nmPageSongsHasMore && !state.nmPageLoadingMore,
+                    lastIndex = li.visibleItemsInfo.lastOrNull()?.index ?: -1,
+                    total = li.totalItemsCount,
+                ) { state.loadMoreNmPage(0) }
             }
         }
+    }
+}
+
+/** 列表底部「正在加载更多」占位 */
+@Composable
+private fun LoadingMoreRow(text: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp), strokeWidth = 2.dp,
+        )
+        Spacer(Modifier.width(8.dp))
+        Txt(text, 12, color = MutedColor)
     }
 }
 
