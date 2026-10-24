@@ -1088,13 +1088,13 @@ class AppState {
     }
 
     /** 待加入歌单的请求：UI 检测到非空就弹歌单选择 */
-    var pendingPick by mutableStateOf<PickRequest?>(null); private set
+    var pendingPick by mutableStateOf<Page.PickRequest?>(null); private set
 
     /** 请求把一批歌曲加入某个歌单 */
     fun pickRequest(ids: List<String>, name: String, cover: String? = null) {
         if (ids.isEmpty()) return
         keepForPlaylist(songsByIds(ids))
-        pendingPick = PickRequest(ids.distinct(), name, cover)
+        pendingPick = Page.PickRequest(ids.distinct(), name, cover)
     }
 
     /** 取消加入歌单 */

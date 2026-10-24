@@ -521,9 +521,3 @@ fun SimpleSeekBar(position: Long, duration: Long, onSeek: (Long) -> Unit) {
         Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(3.dp).background(Color.White, CircleShape))
     }
 }
-
-/** 毫秒 -> mm:ss */
-fun fmt(ms: Long): String {
-    val v = (ms.coerceAtLeast(0)) / 1000
-    return "%02d:%02d".format(v / 60, v % 60)
-}
