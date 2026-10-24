@@ -1,6 +1,9 @@
 package gomusic
 
 import kotlin.math.abs
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyColumn
 import kotlinx.coroutines.launch
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material3.CircularProgressIndicator
@@ -617,6 +620,80 @@ fun CircleLyrics(
                     textAlign = TextAlign.Center,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 竖排滚动歌词（与参考图一致）。
+ *
+ * 当前句居中高亮，前后几句依次淡显；可以上下滑动浏览，
+ * 点某一句直接跳到那一句。跟播时自动把当前句滚回正中，
+ * 手动滑动后暂停几秒再恢复。
+ */
+@Composable
+fun VerticalLyrics(
+    lines: List<LrcLine>,
+    idx: Int,
+    modifier: Modifier = Modifier,
+    loading: Boolean = false,
+    curColor: Color = Color.White,
+    dimColor: Color = Color.White.copy(alpha = 0.42f),
+    onSeek: (Long) -> Unit,
+) {
+    if (lines.isEmpty()) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (loading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = curColor, modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Txt("正在加载歌词…", 14, color = dimColor)
+                }
+            } else {
+                Txt("暂无歌词", 14, color = dimColor)
+            }
+        }
+        return
+    }
+    val st = androidx.compose.foundation.lazy.rememberLazyListState()
+    var manualUntil by remember { mutableLongStateOf(0L) }
+    var auto by remember { mutableStateOf(false) }
+    LaunchedEffect(st) {
+        androidx.compose.runtime.snapshotFlow { st.isScrollInProgress }
+            .collect { if (it && !auto) manualUntil = System.currentTimeMillis() + 4000 }
+    }
+    LaunchedEffect(idx, lines.size) {
+        if (idx >= 0 && System.currentTimeMillis() > manualUntil) {
+            auto = true
+            try { st.animateScrollToItem(idx) } finally { auto = false }
+        }
+    }
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            state = st,
+            contentPadding = PaddingValues(vertical = maxHeight / 2 - 30.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            itemsIndexed(lines) { i, l ->
+                val cur = i == idx
+                Text(
+                    zhText(l.text),
+                    Modifier.fillMaxWidth()
+                        .clickable(enabled = l.timeMs >= 0) {
+                            manualUntil = System.currentTimeMillis() + 6000
+                            onSeek(l.timeMs)
+                        }
+                        .padding(horizontal = 24.dp, vertical = 6.dp),
+                    color = if (cur) curColor else dimColor,
+                    fontSize = if (cur) 19.sp else 16.sp,
+                    lineHeight = if (cur) 30.sp else 26.sp,
+                    fontWeight = if (cur) FontWeight.Bold else FontWeight.Normal,
+                    textAlign = TextAlign.Center,
                 )
             }
         }

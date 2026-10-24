@@ -1156,19 +1156,77 @@ fun FullPlayerOverlay(state: AppState) {
                 QualityMenu(state)
             }
             Row(Modifier.weight(1f).fillMaxWidth()) {
-                // ---------- 左：封面居中，歌词绕封面圆心滚动 ----------
+                // ---------- 左：专辑大图，下方歌手 / 专辑名 / 进度条 / 控制 ----------
                 BoxWithConstraints(
-                    Modifier.weight(1.25f).fillMaxHeight(),
+                    Modifier.weight(1f).fillMaxHeight(),
                     contentAlignment = Alignment.Center,
                 ) {
-                    val r = minOf(maxWidth, maxHeight) * 0.34f
-                    Box(contentAlignment = Alignment.Center) {
-                        Cover(song.coverUrl, Modifier.size(r * 1.5f), 512, 16.dp)
-                        CircleLyrics(
-                            state.lyric, state.lyricIndex, r,
-                            Modifier.size(r * 2.6f), state.lyricLoading,
-                        ) { state.seek(it) }
+                    val coverSize = minOf(maxWidth * 0.62f, maxHeight * 0.62f).coerceAtLeast(80.dp)
+                    Column(
+                        Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Cover(song.coverUrl, Modifier.size(coverSize), 512, 16.dp)
+                        Spacer(Modifier.height(10.dp))
+                        // 第一行小字：歌手
+                        Txt(song.artist, 12, color = Color.White.copy(alpha = 0.72f), maxLines = 1)
+                        Spacer(Modifier.height(2.dp))
+                        // 第二行：专辑名
+                        Txt(song.album.ifBlank { "未知专辑" }, 15, color = Color.White, maxLines = 1)
+                        Spacer(Modifier.height(8.dp))
+                        SimpleSeekBar(state.positionMs, state.durationMs) { state.seek(it) }
+                        Row(Modifier.fillMaxWidth(0.92f)) {
+                            Txt(fmt(state.positionMs), 11, color = Color.White.copy(alpha = 0.6f))
+                            Spacer(Modifier.weight(1f))
+                            Txt(fmt(state.durationMs), 11, color = Color.White.copy(alpha = 0.6f))
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 38.dp, tint = Color.White) { state.prev() }
+                            Spacer(Modifier.width(4.dp))
+                            Box(
+                                Modifier.size(52.dp).clip(CircleShape).background(Color.White)
+                                    .clickable { state.toggle() },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                androidx.compose.material3.Icon(
+                                    if (state.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                                    "播放/暂停", tint = Color.Black, modifier = Modifier.size(26.dp),
+                                )
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            IconBtn(Icons.Outlined.SkipNext, "下一首", size = 38.dp, tint = Color.White) { state.next() }
+                        }
+                        Spacer(Modifier.height(2.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            IconBtn(Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表", size = 32.dp, tint = Color.White) {
+                                state.rightTab = 1
+                                state.closeFullPlayer()
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            IconBtn(
+                                when (state.playMode) {
+                                    1 -> Icons.Outlined.Shuffle
+                                    2 -> Icons.Outlined.RepeatOne
+                                    else -> Icons.Outlined.Repeat
+                                },
+                                "播放方式", size = 32.dp, tint = Color.White,
+                            ) { state.cycleMode() }
+                        }
                     }
+                }
+                // ---------- 右：竖排滚动歌词 ----------
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    VerticalLyrics(state.lyric, state.lyricIndex, Modifier.fillMaxSize(), state.lyricLoading) { state.seek(it) }
                 }
                 // ---------- 右：歌曲信息 + 进度条 + 控制 ----------
                 Column(

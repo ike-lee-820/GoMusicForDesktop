@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "de.myocd"
-version = "1.3.5"
+version = "1.3.6"
 
 // ---------- 平台相关依赖（FFmpeg 原生库 / OpenAL 原生库）----------
 // 只打当前系统的原生库，避免把 5 个平台的 so/dll/dylib 全塞进去（几百 MB）
@@ -87,7 +87,7 @@ compose.desktop {
         mainClass = "gomusic.MainKt"
         nativeDistributions {
             packageName = "GoMusic"
-            packageVersion = "1.3.5"
+            packageVersion = "1.3.6"
             description = "GoMusic Desktop"
             vendor = "GoMusic"
             copyright = "GoMusic"
