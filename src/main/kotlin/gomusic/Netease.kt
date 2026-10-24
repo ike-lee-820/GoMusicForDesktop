@@ -11,6 +11,11 @@ import okhttp3.Request
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 
 /** 二维码轮询状态 */
 data class QrStatus(val code: Int, val cookie: String? = null, val message: String? = null)
@@ -363,7 +368,7 @@ object Netease {
         val k = "$id|$quality|${cookie.take(8).hashCode()}"
         val hit = urlCache[k]
         if (hit != null && System.currentTimeMillis() - hit.second < URL_TTL_MS) return
-        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        GlobalScope.launch(Dispatchers.IO) {
             runCatching { audioUrl(id, quality) }.onFailure { NmLog.note("预取音源失败：${it.message}") }
         }
     }
@@ -423,9 +428,9 @@ object Netease {
                 lv to listOf("id" to id.toString(), "level" to lv, "realIP" to FALLBACK_CN_IP),
             )
         }
-        return kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+        return runBlocking(Dispatchers.IO) {
             jobs.map { (lv, ps) ->
-                kotlinx.coroutines.async {
+                async {
                     val r = getOnce("/song/url/v1", *ps.toTypedArray()) ?: return@async null
                     val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
                     val u = first?.str("url")
