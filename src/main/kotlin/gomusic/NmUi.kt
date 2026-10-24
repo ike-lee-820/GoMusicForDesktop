@@ -30,6 +30,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -382,6 +383,7 @@ private suspend fun <T> withIo(block: suspend () -> T): T =
 /** 网易云登录：二维码为主，验证码登录备用 */
 @Composable
 fun NmLoginDialog(state: AppState) {
+    val scope = rememberCoroutineScope()
     var qr by remember { mutableStateOf<String?>(null) }
     var key by remember { mutableStateOf<String?>(null) }
     var tip by remember { mutableStateOf("正在获取二维码") }
@@ -459,16 +461,20 @@ fun NmLoginDialog(state: AppState) {
                 GoField("验证码", captcha) { captcha = it }
                 Spacer(Modifier.height(10.dp))
                 GoButton(if (sent) "重新发送" else "发送验证码") {
-                    state.toast(
-                        if (withIo { Netease.sendCaptcha(phone) }) "验证码已发送" else "发送失败",
-                    )
-                    sent = true
+                    scope.launch {
+                        state.toast(
+                            if (withIo { Netease.sendCaptcha(phone) }) "验证码已发送" else "发送失败",
+                        )
+                        sent = true
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 GoButton("登录", primary = true) {
-                    val ck = withIo { Netease.loginByCaptcha(phone, captcha) }
-                    if (ck.isNullOrBlank()) state.toast("登录失败，请检查验证码")
-                    else state.nmLogin(ck)
+                    scope.launch {
+                        val ck = withIo { Netease.loginByCaptcha(phone, captcha) }
+                        if (ck.isNullOrBlank()) state.toast("登录失败，请检查验证码")
+                        else state.nmLogin(ck)
+                    }
                 }
             }
             Spacer(Modifier.height(12.dp))

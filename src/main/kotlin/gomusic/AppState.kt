@@ -7,6 +7,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -648,9 +650,9 @@ class AppState {
         homeLoading = true
         homeJob = scope.launch {
             try {
-                val dR = kotlinx.coroutines.async(Dispatchers.IO) { Netease.recommendSongs() }
-                val dN = kotlinx.coroutines.async(Dispatchers.IO) { Netease.topSongs(newSongType) }
-                val dH = kotlinx.coroutines.async(Dispatchers.IO) { Netease.hotSearch() }
+                val dR = async(Dispatchers.IO) { Netease.recommendSongs() }
+                val dN = async(Dispatchers.IO) { Netease.topSongs(newSongType) }
+                val dH = async(Dispatchers.IO) { Netease.hotSearch() }
                 val r = dR.await(); val n = dN.await(); val h = dH.await()
                 keepNetease(r + n)
                 homeRecommend = r

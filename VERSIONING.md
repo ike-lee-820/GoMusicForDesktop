@@ -40,3 +40,4 @@
 - `1.3.2` 小迭代：歌词加载中显示「正在加载歌词…」；切换音质不再重新取歌词
 - `1.3.3` 小迭代：全屏播放器歌词改为以封面圆心为圆心的圆形滚动；信息 / 进度条 / 控件移到右半边
 - `1.3.4` 小迭代：修编译（重复定义的 albumArtist / artistDetail、缺 CircleShape 导入、重复 @Composable、NameDialog 缺注解）
+- `1.3.5` 小迭代：修编译（async / launch / CircularProgressIndicator / LocalDensity 导入，withIo 需协程作用域）
