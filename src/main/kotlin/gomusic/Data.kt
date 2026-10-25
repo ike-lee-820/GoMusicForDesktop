@@ -128,7 +128,17 @@ object Api {
 
     private val detailCache = ConcurrentHashMap<String, SongDetail>()
 
-    private val ORDER = listOf("normal", "high", "low", "extreme", "source", "lossless")
+    // 音质从低到高。本地曲库与网易云的档位键都列进来：
+    // 之前网易云的键（exhigh / hires …）不在这张表里，rank 一律返回 99，
+    // 音质菜单里的顺序就全乱了
+    private val ORDER = listOf(
+        "low", "saver", "economy", "lite",
+        "standard", "normal",
+        "higher", "high",
+        "exhigh", "extreme",
+        "lossless", "source",
+        "hires", "jyeffect", "dolby", "vivid", "sky", "jymaster",
+    )
     fun rank(k: String): Int = ORDER.indexOf(k).let { if (it < 0) 99 else it }
 
     fun abs(u: String?): String? = when {
@@ -252,10 +262,23 @@ object Api {
 }
 
 fun qualityLabel(k: String): String = when (k) {
+    // 本地曲库
     "lossless" -> "无损"
     "high" -> "高品质"
     "normal" -> "标准"
     "low", "saver", "economy", "lite" -> "省流"
+    "extreme" -> "极高"
+    "source" -> "原声"
+    // 网易云档位：之前这里没有，音质菜单直接显示 exhigh 这种原始键
+    "standard" -> "标准 128k"
+    "higher" -> "较高 192k"
+    "exhigh" -> "极高 320k"
+    "hires" -> "Hi-Res"
+    "jyeffect" -> "高清臻音"
+    "dolby" -> "杜比全景声"
+    "vivid" -> "臻音全景声"
+    "jymaster" -> "超清母带"
+    "sky" -> "沉浸环绕声"
     else -> k
 }
 

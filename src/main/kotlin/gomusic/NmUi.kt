@@ -45,7 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 /**
- * 首页：每日推荐 / 新歌速递 / 历史记录 / 热搜歌曲。
+ * 首页：每日推荐 / 新歌速递 / 历史记录 / 热搜歌曲 / 榜单 / 热门歌手 / 最新专辑。
  * 排版与歌曲页顶部的历史栏一致（横向卡片行）。
  */
 @Composable
@@ -56,6 +56,7 @@ fun HomeTab(state: AppState) {
     val hots = state.homeHotWords
     val topArtists = state.homeTopArtists
     val newAlbums = state.homeNewAlbums
+    val tops = state.homeTops
     val his = state.historySongs
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
         if (!state.nmReady) {
@@ -108,6 +109,22 @@ fun HomeTab(state: AppState) {
         }
         if (hots.isNotEmpty()) {
             item { HotSection(state, hots) }
+        }
+        // 榜单：横向卡片，点进去是榜单歌曲
+        if (tops.isNotEmpty()) {
+            item {
+                Column(Modifier.fillMaxWidth()) {
+                    HomeHeader("榜单", null) {}
+                    LazyRow(
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        items(tops, key = { "top${it.nmId}" }) { g ->
+                            GroupCard(g.title, g.subtitle, g.cover, onClick = { state.openNmGroupPublic(g) })
+                        }
+                    }
+                }
+            }
         }
         // 热门歌手：横向卡片
         if (topArtists.isNotEmpty()) {

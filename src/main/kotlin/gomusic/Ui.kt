@@ -111,7 +111,10 @@ private const val ARC_MAX_TILT_DEG = 20f
  * 圆心再拉远的倍数：1.0 = 按倾角刚好算出的半径，越大圆心越远、弧越平缓。
  * 想让歌词摆得更开、更接近平铺，就调大它。
  */
-private const val ARC_RADIUS_BOOST = 1.3f
+// 圆心远近：< 1 把圆心拉近，弧更弯；> 1 拉远，弧更平。
+// 桌面端屏幕高、可见行数多，按公式推出的半径会非常大（弧几乎成直线），
+// 所以这里取 0.65 把圆心拉回来，让最外侧行的倾角约 30°，弧看得出来。
+private const val ARC_RADIUS_BOOST = 0.65f
 
 /**
  * 拖动灵敏度。行距越大，滑过一整行需要的手指距离就越长，
@@ -231,7 +234,10 @@ fun Txt(
         // 从 LocalAppFont 取，保证所有 Txt 都跟着全局字体走
         fontFamily = LocalAppFont.current,
         maxLines = maxLines,
-        overflow = TextOverflow.Ellipsis,
+        // 不限制行数时用 Clip：Ellipsis 需要按「最多几行」去内部的行缓冲里取行，
+        // maxLines 是 Int.MAX_VALUE 时那个缓冲长度与实际行数对不上，
+        // 长文本（比如设置页里的路径）会抛 IndexOutOfBounds。
+        overflow = if (maxLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.Ellipsis,
         textAlign = align,
     )
 }
@@ -471,6 +477,11 @@ fun ArcLyrics(
     loading: Boolean = false,
     curColor: Color = Color.White,
     onSeek: (Long) -> Unit,
+    rowSpacingDp: Float = ARC_ROW_SPACING_DP,
+    radiusBoost: Float = ARC_RADIUS_BOOST,
+    minSpan: Int = 1,
+    curSp: Int = 19,
+    otherSp: Int = 15,
 ) {
     if (lines.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -491,6 +502,8 @@ fun ArcLyrics(
     ArcContent(
         lines = lines, idx = idx, modifier = modifier,
         curColor = curColor, onSeek = onSeek,
+        rowSpacingDp = rowSpacingDp, radiusBoost = radiusBoost,
+        minSpan = minSpan, curSp = curSp, otherSp = otherSp,
     )
 }
 
@@ -501,10 +514,15 @@ private fun ArcContent(
     modifier: Modifier,
     curColor: Color,
     onSeek: (Long) -> Unit,
+    rowSpacingDp: Float,
+    radiusBoost: Float,
+    minSpan: Int,
+    curSp: Int,
+    otherSp: Int,
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val rowPxDrag = with(density) { (ARC_ROW_SPACING_DP / ARC_DRAG_SENSITIVITY).dp.toPx() }.coerceAtLeast(1f)
+    val rowPxDrag = with(density) { (rowSpacingDp / ARC_DRAG_SENSITIVITY).dp.toPx() }.coerceAtLeast(1f)
     // 按句定位：当前句索引变了多少，圆盘就转多少，不做匀速旋转
     val base by animateFloatAsState(
         targetValue = idx.coerceAtLeast(0).toFloat(),
@@ -548,13 +566,13 @@ private fun ArcContent(
             },
         contentAlignment = Alignment.Center,
     ) {
-        // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 7 行）
-        val rowSpan = ARC_ROW_SPACING_DP
+        // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 15 行）
+        val rowSpan = rowSpacingDp
         val rows = (maxHeight.value / rowSpan).toInt().coerceIn(3, 15)
-        val span = (rows / 2).coerceAtLeast(1)
+        val span = (rows / 2).coerceAtLeast(minSpan)
         // 圆心半径由「最外侧行的倾斜角」反推，弧的弯曲程度保持稳定
         val tiltRad = ARC_MAX_TILT_DEG * PI_F / 180f
-        val rDp = (span * rowSpan / tiltRad * ARC_RADIUS_BOOST).coerceAtLeast(maxHeight.value * 0.5f)
+        val rDp = (span * rowSpan / tiltRad * radiusBoost).coerceAtLeast(maxHeight.value * 0.5f)
         // 圆心角由间距 / 半径推出（弧长 s = r·θ），几何自洽
         val stepRad = rowSpan / rDp
         // 半径换算成像素：offset 用的是像素，之前直接拿 dp 数值当像素用，
@@ -581,9 +599,9 @@ private fun ArcContent(
             // 点击区域收紧到文字实际占用的宽度：两侧留白不响应点击
             Box(
                 Modifier
-                    // 固定宽度，让每一行的左边缘对齐；
-                    // 外框跟着文字一起转（rotationZ 相同），不会被斜切
-                    .width(lineW)
+                    // 宽度贴合文字本身，不再固定成整行宽：
+                    // 之前点右侧空白也会命中这一行，看着就像「点别处却跳转了」
+                    .widthIn(max = lineW)
                     .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
                     .graphicsLayer {
                         // 外框跟着文字一起转，两者的边始终平行，不会被斜切
@@ -596,7 +614,7 @@ private fun ArcContent(
                 Text(
                     zhText(lines[i].text),
                     Modifier
-                        // clickable 在最外层：命中框是未旋转的紧凑矩形，
+                        // clickable 贴着文字宽度：命中框不再铺满整行，
                         // 行与行之间按行距排开，不会互相重叠跳错行
                         .clickable(enabled = lines[i].timeMs >= 0 && fade > 0.12f) {
                             // 点了就立刻回到跟播：清掉手动偏移，
@@ -606,7 +624,7 @@ private fun ArcContent(
                             manualAt = 0L
                             onSeek(lines[i].timeMs)
                         }
-                        .fillMaxWidth()
+                        .widthIn(max = lineW)
                         .graphicsLayer {
                             // 圆心角即切线角：不加截断，文字方向才始终贴合圆。
                             // 放在最内层，只影响绘制，不影响上面的命中框尺寸
@@ -616,13 +634,14 @@ private fun ArcContent(
                         .padding(horizontal = 6.dp, vertical = 3.dp),
                     // 当前句用主题色
                     color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
-                    fontSize = if (isCur) 19.sp else 15.sp,
-                    lineHeight = if (isCur) 30.sp else 26.sp,
+                    fontSize = if (isCur) curSp.sp else otherSp.sp,
+                    lineHeight = if (isCur) (curSp * 1.5f).sp else (otherSp * 1.5f).sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     // 左侧对齐
                     textAlign = TextAlign.Start,
-                    // 不裁剪：超过宽度就换行
-                    maxLines = Int.MAX_VALUE,
+                    // 最多两行：长句折行后行高会超过行距，
+                    // 相邻两行的命中框就会上下重叠，点上一行可能跳到下一行
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

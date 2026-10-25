@@ -636,6 +636,8 @@ class AppState {
     var homeHotWords by mutableStateOf<List<String>>(emptyList()); private set
     var homeTopArtists by mutableStateOf<List<Group>>(emptyList()); private set
     var homeNewAlbums by mutableStateOf<List<Group>>(emptyList()); private set
+    /** 榜单（/toplist） */
+    var homeTops by mutableStateOf<List<Group>>(emptyList()); private set
     var homeLoading by mutableStateOf(false); private set
     var newSongType by mutableStateOf(0); private set
 
@@ -648,6 +650,7 @@ class AppState {
             homeRecommend = emptyList()
             homeNewSongs = emptyList()
             homeHotWords = emptyList()
+            homeTops = emptyList()
             homeLoading = false
             return
         }
@@ -663,11 +666,17 @@ class AppState {
                 homeNewSongs = n
                 homeHotWords = h
                 // 热门歌手与最新专辑：跟着首页一起加载
+                // 榜单 / 热门歌手 / 最新专辑：跟着首页一起加载，互不影响
+                val dT = async(Dispatchers.IO) { runCatching { Netease.topList() }.getOrDefault(emptyList()) }
                 val ta = runCatching { Netease.topArtists(20, 0) }.getOrDefault(emptyList())
                 val na = runCatching { Netease.newestAlbums(20) }.getOrDefault(emptyList())
+                homeTops = dT.await()
                 homeTopArtists = ta
                 homeNewAlbums = na
-                NmLog.note("首页加载完成：推荐${r.size} 新歌${n.size} 热搜${h.size} 歌手${ta.size} 新碟${na.size}")
+                NmLog.note(
+                    "首页加载完成：推荐${r.size} 新歌${n.size} 热搜${h.size} " +
+                        "榜单${homeTops.size} 歌手${ta.size} 新碟${na.size}",
+                )
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 NmLog.err("loadHome", e)

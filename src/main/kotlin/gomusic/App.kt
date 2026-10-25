@@ -71,6 +71,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableInteractionSource
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -1250,7 +1251,14 @@ fun FullPlayerOverlay(state: AppState) {
         }
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)))
         Column(Modifier.fillMaxSize().padding(20.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // 吞掉这一行的点击：不吞的话点击空白会穿透到下面的歌词区
+            Row(
+                Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 IconBtn(Icons.Outlined.Close, "关闭") { state.closeFullPlayer() }
                 Spacer(Modifier.width(8.dp))
                 Txt("正在播放", 15, color = Color.White, weight = FontWeight.SemiBold)
@@ -1288,7 +1296,13 @@ fun FullPlayerOverlay(state: AppState) {
                     contentAlignment = Alignment.Center,
                 ) {
                     Column(
-                        Modifier.fillMaxWidth(),
+                        Modifier.fillMaxWidth()
+                            // 操作栏自己消费点击：空白处的点击不再穿透到歌词区，
+                            // 避免「点按钮旁边的空白却跳了歌词」
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
@@ -1368,6 +1382,11 @@ fun FullPlayerOverlay(state: AppState) {
                         state.lyric, state.lyricIndex,
                         Modifier.fillMaxSize(), state.lyricLoading,
                         curColor = MaterialTheme.colorScheme.primary,
+                        // 桌面端屏幕大：字号加大，圆心拉近让弧看得出来
+                        rowSpacingDp = 66f,
+                        radiusBoost = 0.65f,
+                        curSp = 22,
+                        otherSp = 17,
                     ) { state.seek(it) }
                 }
             }
