@@ -1,0 +1,53 @@
+name: Tauri 桌面版
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tauri/**"
+      - ".github/workflows/tauri.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 Linux 依赖
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装前端依赖
+        working-directory: ./tauri
+        run: npm install
+
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: ./tauri
+          tagName: v__VERSION__
+          releaseName: "GoMusic 桌面版 v__VERSION__"
+          releaseBody: "Tauri 版桌面客户端（Vue 3 + Rust）。自动构建发布。"
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

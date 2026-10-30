@@ -1,0 +1,31 @@
+:root {
+  --bg: #121014;
+  --surface: #1c1a20;
+  --surface-hi: #2a2730;
+  --on: #ece6f0;
+  --muted: #a8a2b0;
+  --primary: #d0bcff;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--on);
+  font-family: "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  font-size: 14px;
+  overflow: hidden;
+}
+
+body.font-song {
+  font-family: "Source Han Serif SC", "Noto Serif SC", "Songti SC", serif;
+}
+
+button { font-family: inherit; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--surface-hi); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
