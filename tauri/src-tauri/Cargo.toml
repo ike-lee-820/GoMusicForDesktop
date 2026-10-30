@@ -5,18 +5,23 @@ description = "GoMusic 桌面版"
 edition = "2021"
 rust-version = "1.77"
 
+# 库名必须显式指定：main.rs 里引用的是 gomusic_lib
+[lib]
+name = "gomusic_lib"
+path = "src/lib.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-tokio = { version = "1", features = ["full"] }
-rodio = { version = "0.20", default-features = false, features = ["symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-ogg"] }
-symphonia = { version = "0.5", features = ["all-codecs"] }
+# rustls-tls：不依赖系统 OpenSSL，跨平台构建省事
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+# rodio 用默认特性：自带 cpal 播放 + symphonia 常见解码器，
+# 不要关掉 default 再手写 feature 名（rodio 各版本 feature 名不一致，容易编不过）
+rodio = "0.20"
 dirs = "5"
 base64 = "0.22"
 once_cell = "1"

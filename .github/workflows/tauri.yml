@@ -8,6 +8,10 @@ on:
       - ".github/workflows/tauri.yml"
   workflow_dispatch:
 
+# 需要写权限：编译日志要提交到 ci-logs 分支（GitHub 不允许下载 run 日志）
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -15,9 +19,7 @@ jobs:
       matrix:
         include:
           - platform: ubuntu-22.04
-            args: ""
           - platform: windows-latest
-            args: ""
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +31,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
 
       - uses: actions/setup-node@v4
         with:
@@ -39,24 +41,29 @@ jobs:
         working-directory: ./tauri
         run: npm install
 
-      # 编译错误日志：GitHub 不让下载 run 日志，单独跑一次 check 并把输出
-      # 推到 ci-logs 分支，方便定位
       - name: 编译检查（输出日志）
-        if: matrix.platform == 'ubuntu-22.04'
         continue-on-error: true
-        run: cargo check --manifest-path tauri/src-tauri/Cargo.toml 2>&1 | tail -300 > build.log
+        run: |
+          set +e
+          cd tauri
+          npm run build > ../build.log 2>&1
+          echo "npm build exit=$?" >> ../build.log
+          cd ..
+          cargo check --manifest-path tauri/src-tauri/Cargo.toml >> build.log 2>&1
+          echo "cargo check exit=$?" >> build.log
+          tail -400 build.log > build_tail.log
 
       - name: 保存编译日志
-        if: always() && matrix.platform == 'ubuntu-22.04'
+        if: always()
         run: |
           git config user.name ci
           git config user.email ci@example.com
           git checkout -B ci-logs
           mkdir -p ci
-          cp build.log ci/build.log
-          git add -f ci/build.log
-          git commit -m "ci: build log" || echo "no change"
-          git push -f origin ci-logs
+          cp build_tail.log "ci/build-${{ matrix.platform }}.log"
+          git add -f "ci/build-${{ matrix.platform }}.log"
+          git commit -m "ci: build log (${{ matrix.platform }})" || echo "no change"
+          git push -f origin ci-logs || echo "push failed"
 
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
@@ -69,4 +76,3 @@ jobs:
           releaseBody: "Tauri 版桌面客户端（Vue 3 + Rust）。自动构建发布。"
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.args }}

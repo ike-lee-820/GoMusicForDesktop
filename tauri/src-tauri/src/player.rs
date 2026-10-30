@@ -99,7 +99,7 @@ impl Slot {
     fn position_ms(&self) -> i64 {
         let base = match self.started {
             None => return self.offset_ms,
-            Some(_) => {},
+            Some(b) => b,
         };
         let elapsed = match self.paused_at {
             Some(p) => p.duration_since(base).saturating_sub(self.paused_accum),
