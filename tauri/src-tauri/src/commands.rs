@@ -4,6 +4,7 @@ use crate::api;
 use crate::models::*;
 use crate::netease::netease;
 use crate::player::Player;
+use crate::player::Status;
 use crate::prefs;
 use crate::prefs::{DownloadRecord, Playlist, PREFS};
 use crate::store;
@@ -478,4 +479,3 @@ pub fn quality_label_of(k: String) -> String { quality_label(&k) }
 #[tauri::command]
 pub fn nm_level_label_of(k: String) -> String { nm_level_label(&k) }
 
-pub use crate::player::Status;
