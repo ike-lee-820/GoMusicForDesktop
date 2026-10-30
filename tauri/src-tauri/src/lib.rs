@@ -65,6 +65,16 @@ pub fn run() {
             commands::app_version,
             commands::quality_label_of,
             commands::nm_level_label_of,
+            commands::nm_top_list,
+            commands::nm_artist_detail,
+            commands::nm_user_playlists,
+            commands::nm_playlist_add,
+            commands::nm_playlist_del,
+            commands::nm_playlist_rename,
+            commands::check_update,
+            commands::open_url,
+            commands::remove_history,
+            commands::clear_history,
         ])
         .run(tauri::generate_context!())
         .expect("启动 GoMusic 失败");

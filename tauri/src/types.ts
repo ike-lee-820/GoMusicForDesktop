@@ -11,6 +11,8 @@ export interface Song {
   nmId: number
   nmAlbumId: number
   nmArtistId: number
+  /** 网易云 MV id，0 表示没有 MV */
+  mvId?: number
 }
 
 export interface Group {
@@ -76,3 +78,16 @@ export interface PlayerStatus {
   ended: boolean
   cur?: string | null
 }
+
+export interface ArtistInfo { image?: string | null; bio?: string | null }
+
+export interface UpdateInfo { version: string; url: string; notes: string }
+
+export interface QrStatus { code: number; cookie?: string | null; message: string }
+
+/** 二级页面：专辑 / 歌手 / 歌单 / 网易云公开歌单 */
+export type Page =
+  | { kind: "album"; artist: string; name: string }
+  | { kind: "artist"; name: string; nmId?: number }
+  | { kind: "playlist"; id: string }
+  | { kind: "nm"; title: string; kind2: string; id: number }

@@ -479,3 +479,149 @@ pub fn quality_label_of(k: String) -> String { quality_label(&k) }
 #[tauri::command]
 pub fn nm_level_label_of(k: String) -> String { nm_level_label(&k) }
 
+// ---------------- 补充：榜单 / 网易云歌单同步 / 更新 ----------------
+
+#[tauri::command]
+pub fn nm_top_list() -> Vec<Group> { netease().top_list() }
+
+#[tauri::command]
+pub fn nm_artist_detail(id: i64) -> Option<Group> { netease().artist_detail(id) }
+
+/// 我创建的网易云歌单（用于同步）
+#[tauri::command]
+pub fn nm_user_playlists() -> Vec<Group> {
+    let uid = netease().uid();
+    if uid <= 0 { return Vec::new(); }
+    netease().user_playlists(uid)
+}
+
+/// 把歌曲加进网易云歌单；只同步网易云歌曲（本站歌曲在云端不存在）
+#[tauri::command]
+pub fn nm_playlist_add(pid: i64, ids: Vec<String>) -> bool {
+    if pid <= 0 { return false; }
+    let tids: Vec<i64> = ids.iter().filter_map(|x| netease_id_of(x)).collect();
+    if tids.is_empty() { return false; }
+    netease().playlist_add(pid, &tids)
+}
+
+#[tauri::command]
+pub fn nm_playlist_del(pid: i64, ids: Vec<String>) -> bool {
+    if pid <= 0 { return false; }
+    let tids: Vec<i64> = ids.iter().filter_map(|x| netease_id_of(x)).collect();
+    if tids.is_empty() { return false; }
+    netease().playlist_del(pid, &tids)
+}
+
+#[tauri::command]
+pub fn nm_playlist_rename(pid: i64, name: String) -> bool {
+    if pid <= 0 { return false; }
+    netease().playlist_rename(pid, &name)
+}
+
+#[derive(serde::Serialize)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub url: String,
+    pub notes: String,
+}
+
+/// 检查更新：拉 release 列表取版本号最大的（/releases/latest 会漏掉预发布与草稿）
+#[tauri::command]
+pub fn check_update() -> Option<UpdateInfo> {
+    let mirrors = [
+        "https://gh-proxy.com/",
+        "https://ghfast.top/",
+        "https://gh.llkk.cc/",
+        "https://mirror.ghproxy.com/",
+        "https://gh-proxy.net/",
+        "",
+    ];
+    let path = "repos/ike-lee-820/GoMusicForDesktop/releases?per_page=20";
+    let cur = env!("CARGO_PKG_VERSION");
+    let mut urls: Vec<String> = Vec::new();
+    for m in mirrors {
+        if m.is_empty() {
+            urls.push(format!("https://api.github.com/{}", path));
+        } else {
+            urls.push(format!("{}https://api.github.com/{}", m, path));
+        }
+    }
+    for url in urls {
+        let txt = match crate::api::bytes(&url) {
+            Some(b) => String::from_utf8_lossy(&b).to_string(),
+            None => continue,
+        };
+        let v: serde_json::Value = match serde_json::from_str(&txt) { Ok(x) => x, Err(_) => continue };
+        let arr = match v.as_array() { Some(a) => a, None => continue };
+        let mut best: Option<(String, String, String)> = None;
+        for r in arr {
+            if r.get("draft").and_then(|x| x.as_bool()).unwrap_or(false) { continue; }
+            let tag = r.get("tag_name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let ver = tag.trim_start_matches('v').to_string();
+            if ver.is_empty() { continue; }
+            let html = r.get("html_url").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let notes = r.get("body").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let better = match &best {
+                None => true,
+                Some((bv, _, _)) => ver_cmp(&ver, bv) > 0,
+            };
+            if better { best = Some((ver, html, notes)); }
+        }
+        if let Some((ver, url, notes)) = best {
+            if ver_cmp(&ver, cur) > 0 {
+                return Some(UpdateInfo { version: ver, url, notes });
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// 版本号比较：按点分段逐段比数字，非数字段退回字符串比较
+fn ver_cmp(a: &str, b: &str) -> i32 {
+    let pa: Vec<&str> = a.split('.').collect();
+    let pb: Vec<&str> = b.split('.').collect();
+    for i in 0..pa.len().max(pb.len()) {
+        let x = pa.get(i).copied().unwrap_or("0");
+        let y = pb.get(i).copied().unwrap_or("0");
+        match (x.parse::<i64>(), y.parse::<i64>()) {
+            (Ok(m), Ok(n)) => if m != n { return if m > n { 1 } else { -1 } },
+            _ => if x != y { return if x > y { 1 } else { -1 } },
+        }
+    }
+    0
+}
+
+/// 用系统默认浏览器/文件管理器打开链接或目录
+#[tauri::command]
+pub fn open_url(url: String) {
+    let u = url.clone();
+    std::thread::spawn(move || {
+        let _ = if cfg!(target_os = "windows") {
+            std::process::Command::new("cmd").args(["/C", "start", "", &u]).spawn()
+        } else if cfg!(target_os = "macos") {
+            std::process::Command::new("open").arg(&u).spawn()
+        } else {
+            std::process::Command::new("xdg-open").arg(&u).spawn()
+        };
+    });
+}
+
+#[tauri::command]
+pub fn remove_history(ssid: String) -> Vec<String> {
+    let mut p = PREFS.lock();
+    p.history.retain(|x| x != &ssid);
+    let h = p.history.clone();
+    drop(p);
+    prefs::save();
+    h
+}
+
+#[tauri::command]
+pub fn clear_history() -> Vec<String> {
+    let mut p = PREFS.lock();
+    p.history.clear();
+    drop(p);
+    prefs::save();
+    Vec::new()
+}

@@ -78,6 +78,9 @@ pub struct Song {
     pub nm_album_id: i64,
     #[serde(default)]
     pub nm_artist_id: i64,
+    /// 网易云 MV id，0 表示没有 MV
+    #[serde(default)]
+    pub mv_id: i64,
 }
 
 fn default_source() -> String { SRC_LOCAL.to_string() }
@@ -87,7 +90,7 @@ impl Default for Song {
         Song {
             ssid: String::new(), title: String::new(), artist: String::new(), album: String::new(),
             cover_url: None, repo_name: None, owner: None, locked: None,
-            source: SRC_LOCAL.to_string(), nm_id: 0, nm_album_id: 0, nm_artist_id: 0,
+            source: SRC_LOCAL.to_string(), nm_id: 0, nm_album_id: 0, nm_artist_id: 0, mv_id: 0,
         }
     }
 }

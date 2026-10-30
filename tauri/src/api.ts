@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core"
 import type {
-  DlStatus, DownloadRecord, Group, LrcLine, Playlist, PrefsFile, PlayerStatus, Song,
+  DlStatus, DownloadRecord, Group, LrcLine, Playlist, PrefsFile, PlayerStatus, QrStatus,
+  Song, UpdateInfo,
 } from "./types"
 
 export interface Library {
@@ -46,8 +47,7 @@ export const api = {
   nmAvailableLevels: (ssid: string) => invoke<string[]>("nm_available_levels", { ssid }),
   nmQrKey: () => invoke<string | null>("nm_qr_key"),
   nmQrImage: (key: string) => invoke<string | null>("nm_qr_image", { key }),
-  nmQrCheck: (key: string) =>
-    invoke<{ code: number; cookie?: string | null; message: string }>("nm_qr_check", { key }),
+  nmQrCheck: (key: string) => invoke<QrStatus>("nm_qr_check", { key }),
   nmLoginCaptcha: (phone: string, captcha: string) =>
     invoke<string | null>("nm_login_captcha", { phone, captcha }),
   nmSendCaptcha: (phone: string) => invoke<boolean>("nm_send_captcha", { phone }),
@@ -72,7 +72,22 @@ export const api = {
   deleteDownload: (ssid: string) => invoke<DownloadRecord[]>("delete_download", { ssid }),
   openDownloadDir: () => invoke<void>("open_download_dir"),
 
+  removeHistory: (ssid: string) => invoke<string[]>("remove_history", { ssid }),
+  clearHistory: () => invoke<string[]>("clear_history"),
+
   appVersion: () => invoke<string>("app_version"),
+  checkUpdate: () => invoke<UpdateInfo | null>("check_update"),
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
+
+  nmTopList: () => invoke<Group[]>("nm_top_list"),
+  nmArtistDetail: (id: number) => invoke<Group | null>("nm_artist_detail", { id }),
+  nmUserPlaylists: () => invoke<Group[]>("nm_user_playlists"),
+  nmPlaylistAdd: (pid: number, ids: string[]) =>
+    invoke<boolean>("nm_playlist_add", { pid, ids }),
+  nmPlaylistDel: (pid: number, ids: string[]) =>
+    invoke<boolean>("nm_playlist_del", { pid, ids }),
+  nmPlaylistRename: (pid: number, name: string) =>
+    invoke<boolean>("nm_playlist_rename", { pid, name }),
   qualityLabel: (k: string) => invoke<string>("quality_label_of", { k }),
   nmLevelLabel: (k: string) => invoke<string>("nm_level_label_of", { k }),
 }

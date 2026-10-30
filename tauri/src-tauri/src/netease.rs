@@ -122,8 +122,20 @@ fn to_song(o: &Value) -> Option<Song> {
         nm_id: id,
         nm_album_id: al.map(id_of).unwrap_or(0),
         nm_artist_id: ar.map(id_of).unwrap_or(0),
+        mv_id: mv_id_of(o),
         ..Default::default()
     })
+}
+
+/// MV id：搜索结果里常是 0，只有 /song/detail 才给真值，所以 enrich 时补
+fn mv_id_of(o: &Value) -> i64 {
+    let v = o.get("mv").and_then(|x| x.as_i64())
+        .or_else(|| o.get("mvid").and_then(|x| x.as_i64()))
+        .or_else(|| o.get("mvId").and_then(|x| x.as_i64()))
+        .unwrap_or(0);
+    if v > 0 { return v; }
+    // 有些接口把 mv 包成对象 {"id": ...}
+    obj(o, "mv").map(id_of).unwrap_or(0)
 }
 
 fn first_of_data(v: &Value) -> Option<Value> {
@@ -262,6 +274,8 @@ impl Nm {
                     artist: if d.artist.trim().is_empty() { s.artist } else { d.artist.clone() },
                     album: if d.album.trim().is_empty() { s.album } else { d.album.clone() },
                     cover_url: d.cover_url.clone().or(s.cover_url),
+                    // MV 只有详情接口给真值，补上后播放页才能立刻显示 MV 按钮
+                    mv_id: if s.mv_id > 0 { s.mv_id } else { d.mv_id },
                     ..s
                 },
             }
