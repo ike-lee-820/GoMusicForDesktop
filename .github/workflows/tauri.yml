@@ -39,6 +39,25 @@ jobs:
         working-directory: ./tauri
         run: npm install
 
+      # 编译错误日志：GitHub 不让下载 run 日志，单独跑一次 check 并把输出
+      # 推到 ci-logs 分支，方便定位
+      - name: 编译检查（输出日志）
+        if: matrix.platform == 'ubuntu-22.04'
+        continue-on-error: true
+        run: cargo check --manifest-path tauri/src-tauri/Cargo.toml 2>&1 | tail -300 > build.log
+
+      - name: 保存编译日志
+        if: always() && matrix.platform == 'ubuntu-22.04'
+        run: |
+          git config user.name ci
+          git config user.email ci@example.com
+          git checkout -B ci-logs
+          mkdir -p ci
+          cp build.log ci/build.log
+          git add -f ci/build.log
+          git commit -m "ci: build log" || echo "no change"
+          git push -f origin ci-logs
+
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
         env:
