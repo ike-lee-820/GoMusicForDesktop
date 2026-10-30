@@ -8,6 +8,10 @@ on:
       - ".github/workflows/tauri.yml"
   workflow_dispatch:
 
+# 编译日志要写到独立分支，必须显式给写权限
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -15,9 +19,7 @@ jobs:
       matrix:
         include:
           - platform: ubuntu-22.04
-            args: ""
           - platform: windows-latest
-            args: ""
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +31,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
 
       - uses: actions/setup-node@v4
         with:
@@ -39,33 +41,29 @@ jobs:
         working-directory: ./tauri
         run: npm install
 
-      # 编译日志用 artifact 上传（run 日志下载会被 403，artifact 可以拿到）
       - name: 编译检查（输出日志）
-        if: matrix.platform == 'ubuntu-22.04'
         continue-on-error: true
-        run: cargo check --manifest-path tauri/src-tauri/Cargo.toml 2>&1 | tail -400 > tauri-cargo.log
+        run: |
+          cd tauri
+          npm run build > ../build.log 2>&1
+          echo "npm build exit=$?" >> ../build.log
+          cd ..
+          cargo check --manifest-path tauri/src-tauri/Cargo.toml >> build.log 2>&1
+          echo "cargo check exit=$?" >> build.log
+          tail -500 build.log > build_tail.log || true
 
-      - name: 上传编译日志
-        if: always() && matrix.platform == 'ubuntu-22.04'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tauri-cargo-log
-          path: tauri-cargo.log
-
-
-      # 日志存到本次 run 专属分支，避免与其它工作流的 ci-logs 分支互相覆盖
       - name: 保存编译日志到独立分支
-        if: always() && matrix.platform == 'ubuntu-22.04'
+        if: always()
         run: |
           git config user.name ci
           git config user.email ci@example.com
           BR=log-tauri-${{ github.run_id }}
           git checkout -B $BR
           mkdir -p ci
-          cp tauri-cargo.log ci/tauri-cargo.log
-          git add -f ci/tauri-cargo.log
-          git commit -m "ci: tauri cargo log ${{ github.run_id }}" || echo "no change"
-          git push -f origin $BR
+          cp build_tail.log "ci/build-${{ matrix.platform }}.log" || echo "no build.log"
+          git add -f "ci/build-${{ matrix.platform }}.log" || true
+          git commit -m "ci: tauri build log ${{ matrix.platform }} ${{ github.run_id }}" || echo "no change"
+          git push -f origin $BR || echo "push failed"
 
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
@@ -78,4 +76,3 @@ jobs:
           releaseBody: "Tauri 版桌面客户端（Vue 3 + Rust）。自动构建发布。"
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.args }}
