@@ -1,8 +1,10 @@
-name: Build Desktop
+# 已废弃：桌面端已从 Compose Desktop 迁移到 Tauri（见 tauri.yml）。
+# 这里保留只是留档，不再随 push 自动跑 —— 否则每次提交都会红一片。
+# 需要手动验证旧版时，在 Actions 页面点 Run workflow。
+
+name: Build Desktop (Compose, 已废弃)
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
 
 jobs:
