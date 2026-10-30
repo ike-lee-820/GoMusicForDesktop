@@ -91,7 +91,7 @@ const pickFor = ref<Song | null>(null)
     </div>
     <div v-if="loading" class="loading"><span class="spinner" /></div>
     <div v-else class="body">
-      <SongList :list="songs" :on-pick="(s) => (pickFor = s)" />
+      <SongList :list="songs" @pick="(s) => (pickFor = s)" />
     </div>
     <div v-if="pickFor" class="overlay" @click="pickFor = null">
       <div class="dialog pick" @click.stop>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 首页：历史 + 热搜 + 推荐 + 新歌 + 榜单 + 热门歌手 + 新专辑 */
-import { onMounted } from "vue"
+import { computed, onMounted } from "vue"
 import { historySongs, loadHome, playSongs, st } from "../store"
 import type { Group, Song } from "../types"
 
@@ -8,13 +8,14 @@ const emit = defineEmits<{ (e: "openGroup", g: Group): void }>()
 onMounted(loadHome)
 
 function search(w: string) { st.tab = 1; st.query = w }
-function row(list: Song[], title: string) {
-  return { list, title }
-}
-const sections = () => ([
-  row(st.home?.recommend ?? [], "每日推荐"),
-  row(st.home?.newSongs ?? [], "新歌速递"),
-])
+
+// 只取前 20 张卡：首页一次铺太多封面会拖慢首屏
+const recommend = computed(() => (st.home?.recommend ?? []).slice(0, 20))
+const newSongs = computed(() => (st.home?.newSongs ?? []).slice(0, 20))
+const tops = computed(() => (st.home?.tops ?? []).slice(0, 20))
+const topArtists = computed(() => (st.home?.topArtists ?? []).slice(0, 20))
+const newAlbums = computed(() => (st.home?.newAlbums ?? []).slice(0, 20))
+const hotWords = computed(() => (st.home?.hotWords ?? []).slice(0, 12))
 </script>
 
 <template>
@@ -30,17 +31,17 @@ const sections = () => ([
       </div>
     </template>
 
-    <template v-if="st.home?.hotWords?.length">
+    <template v-if="hotWords.length">
       <div class="head">热搜</div>
       <div class="words">
-        <button v-for="w in st.home.hotWords.slice(0, 12)" :key="w" class="word" @click="search(w)">{{ w }}</button>
+        <button v-for="w in hotWords" :key="w" class="word" @click="search(w)">{{ w }}</button>
       </div>
     </template>
 
-    <template v-if="st.home?.tops?.length">
+    <template v-if="tops.length">
       <div class="head">榜单</div>
       <div class="hlist">
-        <div v-for="g in st.home.tops" :key="g.nmId || g.title" class="hcard" @click="emit('openGroup', g)">
+        <div v-for="g in tops" :key="g.nmId || g.title" class="hcard" @click="emit('openGroup', g)">
           <div class="cv" :style="g.cover ? `background-image:url(${g.cover})` : ''" />
           <div class="t ellip">{{ g.title }}</div>
           <div class="a ellip muted">{{ g.subtitle }}</div>
@@ -48,33 +49,41 @@ const sections = () => ([
       </div>
     </template>
 
-    <template v-for="sec in sections()" :key="sec.title">
-      <template v-if="sec.list.length">
-        <div class="head">{{ sec.title }}</div>
-        <div class="hlist">
-          <div v-for="s in sec.list.slice(0, 20)" :key="s.ssid" class="hcard" @click="playSongs(sec.list, sec.list.indexOf(s))">
-            <div class="cv" :style="s.coverUrl ? `background-image:url(${s.coverUrl})` : ''" />
-            <div class="t ellip">{{ s.title }}</div>
-            <div class="a ellip muted">{{ s.artist }}</div>
-          </div>
+    <template v-if="recommend.length">
+      <div class="head">每日推荐</div>
+      <div class="hlist">
+        <div v-for="s in recommend" :key="s.ssid" class="hcard" @click="playSongs(recommend, recommend.indexOf(s))">
+          <div class="cv" :style="s.coverUrl ? `background-image:url(${s.coverUrl})` : ''" />
+          <div class="t ellip">{{ s.title }}</div>
+          <div class="a ellip muted">{{ s.artist }}</div>
         </div>
-      </template>
+      </div>
+    </template>
+    <template v-if="newSongs.length">
+      <div class="head">新歌速递</div>
+      <div class="hlist">
+        <div v-for="s in newSongs" :key="s.ssid" class="hcard" @click="playSongs(newSongs, newSongs.indexOf(s))">
+          <div class="cv" :style="s.coverUrl ? `background-image:url(${s.coverUrl})` : ''" />
+          <div class="t ellip">{{ s.title }}</div>
+          <div class="a ellip muted">{{ s.artist }}</div>
+        </div>
+      </div>
     </template>
 
-    <template v-if="st.home?.topArtists?.length">
+    <template v-if="topArtists.length">
       <div class="head">热门歌手</div>
       <div class="hlist">
-        <div v-for="g in st.home.topArtists" :key="g.nmId || g.title" class="hcard round" @click="emit('openGroup', g)">
+        <div v-for="g in topArtists" :key="g.nmId || g.title" class="hcard round" @click="emit('openGroup', g)">
           <div class="cv circle" :style="g.cover ? `background-image:url(${g.cover})` : ''" />
           <div class="t ellip">{{ g.title }}</div>
         </div>
       </div>
     </template>
 
-    <template v-if="st.home?.newAlbums?.length">
+    <template v-if="newAlbums.length">
       <div class="head">新专辑</div>
       <div class="hlist">
-        <div v-for="g in st.home.newAlbums" :key="g.nmId || g.title" class="hcard" @click="emit('openGroup', g)">
+        <div v-for="g in newAlbums" :key="g.nmId || g.title" class="hcard" @click="emit('openGroup', g)">
           <div class="cv" :style="g.cover ? `background-image:url(${g.cover})` : ''" />
           <div class="t ellip">{{ g.title }}</div>
           <div class="a ellip muted">{{ g.artist }}</div>

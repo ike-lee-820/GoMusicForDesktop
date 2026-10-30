@@ -112,6 +112,7 @@ export async function load() {
     st.nmEnabled = p.nmEnabled ?? true
     st.nmAccount = p.nmAccount ?? ""
   } catch { /* 首次启动没有配置 */ }
+  rebuildIndex()
   st.loading = false
   st.nmReady = await api.nmLoggedIn().catch(() => false)
   st.version = await api.appVersion().catch(() => "")
@@ -126,8 +127,19 @@ export async function loadHome() {
 
 // ============================ 列表派生 ============================
 
+/** ssid -> 歌曲 的索引。曲库几千首时，直接 find 是 O(n)，
+ *  历史/歌单解析会做 n×m 次比较，是卡死的主因之一。 */
+let songIndex: Map<string, Song> | null = null
+export function rebuildIndex() {
+  const m = new Map<string, Song>()
+  for (const s of st.songs) m.set(s.ssid, s)
+  for (const s of Object.values(st.snapshots)) if (!m.has(s.ssid)) m.set(s.ssid, s)
+  for (const s of st.queue) if (!m.has(s.ssid)) m.set(s.ssid, s)
+  songIndex = m
+}
 export function songOf(ssid: string): Song | null {
-  return st.songs.find((s) => s.ssid === ssid)
+  if (!songIndex) rebuildIndex()
+  return songIndex!.get(ssid)
     ?? st.snapshots[ssid]
     ?? st.queue.find((s) => s.ssid === ssid)
     ?? null
@@ -494,12 +506,14 @@ export async function syncNeteasePlaylists() {
 
 export function addToQueue(s: Song) {
   st.queue.push(s)
+  rebuildIndex()
   toast("已加入播放列表")
 }
 
 export function removeFromQueue(i: number) {
   if (i === st.qIndex) return
   st.queue.splice(i, 1)
+  rebuildIndex()
   if (i < st.qIndex) st.qIndex--
 }
 
@@ -510,16 +524,23 @@ export const posRatio = computed(() =>
 )
 
 let statusTimer: any = null
+let busy = false
 export function startStatusLoop() {
   if (statusTimer) return
   statusTimer = setInterval(async () => {
-    const s = await api.status().catch(() => null)
-    if (!s) return
-    st.playing = s.playing && !s.paused
-    st.positionMs = s.positionMs
-    st.durationMs = s.durationMs
-    if (s.ended && st.queue.length) await nextSong(false)
-  }, 250)
+    // 没有在播放就不用查：省掉每秒数次的跨进程调用
+    if (busy || (!st.playing && !st.cur)) return
+    busy = true
+    try {
+      const s = await api.status().catch(() => null)
+      if (s) {
+        st.playing = s.playing && !s.paused
+        st.positionMs = s.positionMs
+        st.durationMs = s.durationMs
+        if (s.ended && st.queue.length) await nextSong(false)
+      }
+    } finally { busy = false }
+  }, 500)
 }
 
 // ============================ 更新 ============================

@@ -110,11 +110,8 @@ async function applyMode() {
   if (st.speed && st.speed !== 1) await api.setRate(st.speed)
 }
 
-function onScroll(e: Event) {
-  const el = e.target as HTMLElement
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
-    if (st.tab === 1) loadMoreNetease(0, st.query)
-  }
+function onReachEnd() {
+  if (st.tab === 1) loadMoreNetease(0, st.query)
 }
 </script>
 
@@ -146,7 +143,7 @@ function onScroll(e: Event) {
           <div class="muted small">{{ sizeText(st.dl.done) }} / {{ sizeText(st.dl.size) }}</div>
         </div>
 
-        <div class="body" @scroll="onScroll">
+        <div class="body">
           <DetailPage v-if="st.page" :page="st.page as Page" @back="st.page = null" />
           <template v-else>
             <div v-if="st.loading && !st.songs.length" class="center"><span class="spinner" /></div>
@@ -155,7 +152,7 @@ function onScroll(e: Event) {
               <div v-if="st.nmSearching && !st.nmSongs.length" class="center muted small">
                 正在搜索网易云曲库
               </div>
-              <SongList :list="songList" :on-pick="onPick" />
+              <SongList :list="songList" @pick="onPick" @reach-end="onReachEnd" />
             </template>
             <GroupGrid v-else-if="st.tab === 2" :groups="albums" @open="openGroup" />
             <GroupGrid v-else-if="st.tab === 3" :groups="artists" wide @open="openGroup" />

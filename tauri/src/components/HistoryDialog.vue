@@ -1,9 +1,20 @@
 <script setup lang="ts">
-import { computed } from "vue"
+import { computed, ref, watch } from "vue"
 import { historySongs, playSongs, st } from "../store"
 import { api } from "../api"
 
-const list = computed(() => historySongs.value)
+const STEP = 100
+const limit = ref(STEP)
+const all = computed(() => historySongs.value)
+const list = computed(() => all.value.slice(0, limit.value))
+watch(all, () => { limit.value = STEP })
+
+function onScroll(e: Event) {
+  const el = e.target as HTMLElement
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 300 && limit.value < all.value.length) {
+    limit.value += STEP
+  }
+}
 
 async function remove(ssid: string) {
   st.history = await api.removeHistory(ssid).catch(() => st.history)
@@ -22,7 +33,7 @@ async function clearAll() {
         <button class="iconbtn" @click="st.showHistory = false">✕</button>
       </div>
       <div v-if="!list.length" class="empty muted">还没有播放记录</div>
-      <div v-else class="body">
+      <div v-else class="body" @scroll="onScroll">
         <div v-for="(s, i) in list" :key="s.ssid + i" class="row" @click="playSongs(list, i)">
           <span class="idx">{{ i + 1 }}</span>
           <div class="cv" :style="s.coverUrl ? `background-image:url(${s.coverUrl})` : ''" />

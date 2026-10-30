@@ -1,14 +1,33 @@
 <script setup lang="ts">
+/** 歌曲列表：分批渲染，滚到底再加载下一批。
+ *  曲库几千首时一次性渲染所有行会卡死界面（手机端是 LazyColumn，本身就是虚拟的）。 */
+import { onMounted, ref, watch } from "vue"
 import { download, isDownloaded, playSongs, st, addToQueue } from "../store"
 import type { Song } from "../types"
 
-const props = defineProps<{ list: Song[]; onPick: (s: Song) => void }>()
-defineEmits<{ (e: "reachEnd"): void }>()
+const props = defineProps<{ list: Song[] }>()
+const emit = defineEmits<{ (e: "pick", s: Song): void; (e: "reachEnd"): void }>()
+
+const STEP = 80
+const limit = ref(STEP)
+const el = ref<HTMLElement | null>(null)
+
+watch(() => props.list, () => { limit.value = STEP })
+
+function onScroll() {
+  const e = el.value
+  if (!e) return
+  if (e.scrollTop + e.clientHeight >= e.scrollHeight - 300) {
+    if (limit.value < props.list.length) limit.value += STEP
+    else emit("reachEnd")
+  }
+}
+onMounted(() => { limit.value = STEP })
 </script>
 
 <template>
-  <div class="list">
-    <div v-for="(s, i) in props.list" :key="s.ssid + i" class="row"
+  <div ref="el" class="list" @scroll="onScroll">
+    <div v-for="(s, i) in props.list.slice(0, limit)" :key="s.ssid + i" class="row"
          :class="{ on: s.ssid === st.cur?.ssid }" @click="playSongs(props.list, i)">
       <div class="cv" :style="s.coverUrl ? `background-image:url(${s.coverUrl})` : ''" />
       <div class="meta">
@@ -18,8 +37,9 @@ defineEmits<{ (e: "reachEnd"): void }>()
       <button class="iconbtn" :class="{ on: isDownloaded(s.ssid) }" title="下载"
               @click.stop="download([s])">{{ isDownloaded(s.ssid) ? "✓" : "⇩" }}</button>
       <button class="iconbtn" title="加入播放列表" @click.stop="addToQueue(s)">☰</button>
-      <button class="iconbtn" title="加入歌单" @click.stop="props.onPick(s)">＋</button>
+      <button class="iconbtn" title="加入歌单" @click.stop="emit('pick', s)">＋</button>
     </div>
+    <div v-if="limit < props.list.length" class="more muted">滚动加载更多…</div>
   </div>
 </template>
 
@@ -39,4 +59,5 @@ defineEmits<{ (e: "reachEnd"): void }>()
 .meta { flex: 1; min-width: 0; }
 .t { font-size: 14px; font-weight: 500; }
 .a { font-size: 12px; }
+.more { text-align: center; padding: 12px; font-size: 12px; }
 </style>
