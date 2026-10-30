@@ -19,7 +19,9 @@ jobs:
       matrix:
         include:
           - platform: ubuntu-22.04
+            args: "--bundles deb,appimage"
           - platform: windows-latest
+            args: "--bundles nsis"
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +45,7 @@ jobs:
 
       - name: 编译检查（输出日志）
         continue-on-error: true
+        shell: bash
         run: |
           cd tauri
           npm run build > ../build.log 2>&1
@@ -54,16 +57,17 @@ jobs:
 
       - name: 保存编译日志到独立分支
         if: always()
+        shell: bash
         run: |
           git config user.name ci
           git config user.email ci@example.com
           BR=log-tauri-${{ github.run_id }}
-          git checkout -B $BR
+          git checkout -B "$BR"
           mkdir -p ci
-          cp build_tail.log "ci/build-${{ matrix.platform }}.log" || echo "no build.log"
+          cp build_tail.log "ci/build-${{ matrix.platform }}.log" || echo "no log"
           git add -f "ci/build-${{ matrix.platform }}.log" || true
           git commit -m "ci: tauri build log ${{ matrix.platform }} ${{ github.run_id }}" || echo "no change"
-          git push -f origin $BR || echo "push failed"
+          git push -f origin "$BR" || echo "push failed"
 
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
@@ -76,3 +80,4 @@ jobs:
           releaseBody: "Tauri 版桌面客户端（Vue 3 + Rust）。自动构建发布。"
           releaseDraft: false
           prerelease: false
+          args: ${{ matrix.args }}
