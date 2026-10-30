@@ -145,40 +145,66 @@ export function songOf(ssid: string): Song | null {
     ?? null
 }
 
-export const ranked = computed(() =>
-  [...st.songs].sort((a, b) => (st.playCounts[b.ssid] ?? 0) - (st.playCounts[a.ssid] ?? 0)),
-)
+// 播放一次就 bump 一次计数，若每次都重排整个曲库（几千首）会明显卡顿。
+// 这里用版本号控制：只有计数真的变了才重排。
+const rankVer = ref(0)
+export function markRankDirty() { rankVer.value++ }
+
+export const ranked = computed(() => {
+  rankVer.value // 依赖版本号
+  return [...st.songs].sort((a, b) => (st.playCounts[b.ssid] ?? 0) - (st.playCounts[a.ssid] ?? 0))
+})
+
+// 已下载集合：列表每行都要判断，原来用 some 是 O(n×m)
+let dlSet: Set<string> | null = null
+let dlVer = -1
+function dlIndexVer() { return st.downloads.length }
+export function isDownloaded(ssid: string): boolean {
+  const v = dlIndexVer()
+  if (!dlSet || dlVer !== v) { dlSet = new Set(st.downloads.map((d) => d.ssid)); dlVer = v }
+  return dlSet.has(ssid)
+}
 
 export const historySongs = computed(() =>
   st.history.map((id) => songOf(id)).filter((s): s is Song => !!s),
 )
 
-export function albumGroups(): Group[] {
-  const m = new Map<string, Group>()
+// 分组按曲库引用缓存：切搜索词时不必重建整个 Map
+let grpCache: { ref: Song[]; albums: Group[]; artists: Group[] } | null = null
+function groups() {
+  if (grpCache && grpCache.ref === st.songs) return grpCache
+  const albums: Group[] = []
+  const artists: Group[] = []
+  const am = new Map<string, Group>()
+  const rm = new Map<string, Group>()
   for (const s of st.songs) {
-    const key = `${s.album}|${s.artist}`
-    const g = m.get(key)
+    const ak = `${s.album}|${s.artist}`
+    let g = am.get(ak)
     if (g) g.songs.push(s)
-    else m.set(key, {
-      title: s.album || "未知专辑", subtitle: s.artist, cover: s.coverUrl, songs: [s],
-      artist: s.artist, album: s.album, source: s.source, nmId: 0, nmKind: "album",
-    })
+    else {
+      g = {
+        title: s.album || "未知专辑", subtitle: s.artist, cover: s.coverUrl, songs: [s],
+        artist: s.artist, album: s.album, source: s.source, nmId: 0, nmKind: "album",
+      }
+      am.set(ak, g); albums.push(g)
+    }
+    let r = rm.get(s.artist)
+    if (r) r.songs.push(s)
+    else {
+      r = {
+        title: s.artist, subtitle: "", cover: s.coverUrl, songs: [s],
+        artist: s.artist, album: "", source: s.source, nmId: 0, nmKind: "artist",
+      }
+      rm.set(s.artist, r); artists.push(r)
+    }
   }
-  return [...m.values()]
+  grpCache = { ref: st.songs, albums, artists }
+  return grpCache
 }
 
-export function artistGroups(): Group[] {
-  const m = new Map<string, Group>()
-  for (const s of st.songs) {
-    const g = m.get(s.artist)
-    if (g) g.songs.push(s)
-    else m.set(s.artist, {
-      title: s.artist, subtitle: `${st.artists[s.artist]?.bio ? "" : ""}`, cover: s.coverUrl,
-      songs: [s], artist: s.artist, album: "", source: s.source, nmId: 0, nmKind: "artist",
-    })
-  }
-  return [...m.values()]
-}
+export function albumGroups(): Group[] { return groups().albums }
+
+export function artistGroups(): Group[] { return groups().artists }
 
 /** 本地结果与网易云结果合并，本地在前 */
 export function mix<T>(local: T[], nm: T[]): T[] { return [...local, ...nm] }
@@ -193,8 +219,6 @@ export function localMatch(text: string, q: string): boolean {
   }
   return false
 }
-
-export function isDownloaded(ssid: string) { return st.downloads.some((d) => d.ssid === ssid) }
 
 export function coverOf(ref?: string | null): string {
   if (!ref) return ""
@@ -279,6 +303,7 @@ export async function startCurrent(atMs = 0) {
   const s = st.queue[st.qIndex]
   if (!s) return
   st.cur = s
+  markRankDirty()
   st.showFull = true // 桌面端直接进横版全屏播放器
   st.lyrics = []
   st.lyricLoading = true

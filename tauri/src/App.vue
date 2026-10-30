@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue"
+import Icon from "./components/Icon.vue"
 import SideRail from "./components/SideRail.vue"
 import HomeTab from "./components/HomeTab.vue"
 import SongList from "./components/SongList.vue"
@@ -121,13 +122,13 @@ function onReachEnd() {
       <SideRail />
       <div class="content">
         <div class="head">
-          <button v-if="st.page" class="iconbtn" @click="st.page = null">←</button>
+          <button v-if="st.page" class="iconbtn" title="返回" @click="st.page = null"><Icon name="arrow_back" :size="20" /></button>
           <span class="t ellip">{{ title }}</span>
-          <button class="iconbtn" title="设置" @click="st.showSettings = true">⚙</button>
+          <button class="iconbtn" title="设置" @click="st.showSettings = true"><Icon name="settings" :size="20" /></button>
         </div>
         <div v-if="!st.page" class="searchrow">
           <input v-model="st.query" class="field" :placeholder="HINTS[st.tab]" />
-          <button v-if="st.query" class="btn ghost" @click="st.query = ''">清除</button>
+          <button v-if="st.query" class="iconbtn" title="清除搜索" @click="st.query = ''"><Icon name="close" :size="18" /></button>
         </div>
 
         <div v-if="st.offline" class="notice">

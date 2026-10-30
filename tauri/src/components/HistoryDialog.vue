@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
+import Icon from "./Icon.vue"
 import { historySongs, playSongs, st } from "../store"
 import { api } from "../api"
 
@@ -30,7 +31,7 @@ async function clearAll() {
       <div class="head">
         <span class="tt">播放历史</span>
         <button v-if="list.length" class="btn ghost" @click="clearAll">清空</button>
-        <button class="iconbtn" @click="st.showHistory = false">✕</button>
+        <button class="iconbtn" title="关闭" @click="st.showHistory = false"><Icon name="close" :size="20" /></button>
       </div>
       <div v-if="!list.length" class="empty muted">还没有播放记录</div>
       <div v-else class="body" @scroll="onScroll">
@@ -41,7 +42,7 @@ async function clearAll() {
             <div class="t ellip">{{ s.title }}</div>
             <div class="a ellip muted">{{ s.artist }}</div>
           </div>
-          <button class="iconbtn" @click.stop="remove(s.ssid)">🗑</button>
+          <button class="iconbtn" title="删除这条记录" @click.stop="remove(s.ssid)"><Icon name="delete" :size="20" /></button>
         </div>
       </div>
     </div>

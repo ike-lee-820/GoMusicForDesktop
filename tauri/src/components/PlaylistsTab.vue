@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 歌单页：新建 / 同步网易云 / 列表 */
 import { ref } from "vue"
+import Icon from "./Icon.vue"
 import {
   createPlaylist, deletePlaylist, playSongs, songOf, st, syncNeteasePlaylists, toast,
 } from "../store"
@@ -30,9 +31,9 @@ function songsOf(p: { songs: string[] }) {
 <template>
   <div class="pl">
     <div class="bar">
-      <button class="btn primary" @click="creating = true">新建歌单</button>
+      <button class="btn primary" @click="creating = true"><Icon name="add" :size="18" />新建歌单</button>
       <button class="btn" :disabled="syncing" @click="doSync">
-        {{ syncing ? "同步中…" : "同步网易云" }}
+        <Icon name="refresh" :size="18" />{{ syncing ? "同步中…" : "同步网易云" }}
       </button>
     </div>
     <div v-if="creating" class="newrow">
@@ -47,9 +48,9 @@ function songsOf(p: { songs: string[] }) {
         <div class="t ellip">{{ p.name }}</div>
         <div class="a muted">{{ p.songs.length }} 首</div>
       </div>
-      <button class="iconbtn" title="播放全部" @click.stop="playSongs(songsOf(p), 0)">▶</button>
+      <button class="iconbtn" title="播放全部" @click.stop="playSongs(songsOf(p), 0)"><Icon name="play_arrow" :size="20" /></button>
       <button class="iconbtn" title="删除歌单"
-              @click.stop="deletePlaylist(p.id); toast('已删除歌单')">🗑</button>
+              @click.stop="deletePlaylist(p.id); toast('已删除歌单')"><Icon name="delete" :size="20" /></button>
     </div>
   </div>
 </template>

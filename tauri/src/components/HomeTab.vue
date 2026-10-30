@@ -97,7 +97,10 @@ const hotWords = computed(() => (st.home?.hotWords ?? []).slice(0, 12))
 .home { height: 100%; overflow: auto; padding-bottom: 20px; }
 .head { font-size: 15px; font-weight: 700; padding: 14px 16px 8px; }
 .hlist { display: flex; gap: 12px; overflow-x: auto; padding: 0 16px 6px; }
-.hcard { width: 92px; flex: none; cursor: pointer; }
+.hcard {
+  width: 92px; flex: none; cursor: pointer;
+  content-visibility: auto; contain-intrinsic-size: 92px 130px;
+}
 .round { width: 84px; text-align: center; }
 .cv {
   width: 100%; aspect-ratio: 1; border-radius: 10px; background-size: cover;

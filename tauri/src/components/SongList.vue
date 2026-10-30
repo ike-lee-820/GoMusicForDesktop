@@ -2,7 +2,8 @@
 /** 歌曲列表：分批渲染，滚到底再加载下一批。
  *  曲库几千首时一次性渲染所有行会卡死界面（手机端是 LazyColumn，本身就是虚拟的）。 */
 import { onMounted, ref, watch } from "vue"
-import { download, isDownloaded, playSongs, st, addToQueue } from "../store"
+import Icon from "./Icon.vue"
+import { addToQueue, download, isDownloaded, playSongs, st } from "../store"
 import type { Song } from "../types"
 
 const props = defineProps<{ list: Song[] }>()
@@ -35,9 +36,15 @@ onMounted(() => { limit.value = STEP })
         <div class="a ellip muted">{{ s.artist }} · {{ s.album }}</div>
       </div>
       <button class="iconbtn" :class="{ on: isDownloaded(s.ssid) }" title="下载"
-              @click.stop="download([s])">{{ isDownloaded(s.ssid) ? "✓" : "⇩" }}</button>
-      <button class="iconbtn" title="加入播放列表" @click.stop="addToQueue(s)">☰</button>
-      <button class="iconbtn" title="加入歌单" @click.stop="emit('pick', s)">＋</button>
+              @click.stop="download([s])">
+        <Icon :name="isDownloaded(s.ssid) ? 'check_circle' : 'download'" :size="20" />
+      </button>
+      <button class="iconbtn" title="加入播放列表" @click.stop="addToQueue(s)">
+        <Icon name="queue_music" :size="20" />
+      </button>
+      <button class="iconbtn" title="加入歌单" @click.stop="emit('pick', s)">
+        <Icon name="playlist_add" :size="20" />
+      </button>
     </div>
     <div v-if="limit < props.list.length" class="more muted">滚动加载更多…</div>
   </div>

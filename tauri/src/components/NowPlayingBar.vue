@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 底部悬浮正在播放栏：点整条进入横版全屏播放器 */
 import { computed } from "vue"
+import Icon from "./Icon.vue"
 import { fmt, nextSong, prevSong, st, toggle } from "../store"
 
 const cur = computed(() => st.cur)
@@ -15,9 +16,11 @@ const ratio = computed(() => st.durationMs ? Math.min(1, st.positionMs / st.dura
       <div class="a ellip muted">{{ cur.artist }} · {{ cur.album }}</div>
     </div>
     <div class="ctl" @click.stop>
-      <button class="iconbtn" @click="prevSong">⏮</button>
-      <button class="iconbtn play" @click="toggle">{{ st.playing ? "⏸" : "▶" }}</button>
-      <button class="iconbtn" @click="nextSong(true)">⏭</button>
+      <button class="iconbtn" title="上一首" @click="prevSong"><Icon name="skip_previous" :size="20" /></button>
+      <button class="iconbtn play" :title="st.playing ? '暂停' : '播放'" @click="toggle">
+        <Icon :name="st.playing ? 'pause' : 'play_arrow'" :size="20" />
+      </button>
+      <button class="iconbtn" title="下一首" @click="nextSong(true)"><Icon name="skip_next" :size="20" /></button>
     </div>
     <div class="prog">
       <span class="time">{{ fmt(st.positionMs) }}</span>

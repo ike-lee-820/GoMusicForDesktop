@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 二级页：本地专辑 / 歌手 / 歌单 / 网易云公开歌单 */
 import { computed, onMounted, ref, watch } from "vue"
+import Icon from "./Icon.vue"
 import SongList from "./SongList.vue"
 import { api } from "../api"
 import {
@@ -77,14 +78,18 @@ const pickFor = ref<Song | null>(null)
 <template>
   <div class="detail">
     <div class="head">
-      <button class="iconbtn" @click="emit('back')">←</button>
+      <button class="iconbtn" title="返回" @click="emit('back')"><Icon name="arrow_back" :size="20" /></button>
       <div class="cv" :style="cover ? `background-image:url(${cover})` : ''" />
       <div class="meta">
         <div class="t ellip">{{ title }}</div>
         <div class="s muted">{{ sub }}</div>
         <div class="acts">
-          <button class="btn primary" :disabled="!songs.length" @click="playSongs(songs, 0)">播放全部</button>
-          <button class="btn" :disabled="!songs.length" @click="downloadAll">下载全部</button>
+          <button class="btn primary" :disabled="!songs.length" @click="playSongs(songs, 0)">
+            <Icon name="play_arrow" :size="18" />播放全部
+          </button>
+          <button class="btn" :disabled="!songs.length" @click="downloadAll">
+            <Icon name="download" :size="18" />下载全部
+          </button>
           <button class="btn" :disabled="!songs.length" @click="st.showHistory = false; pickFor = songs[0]">加入歌单</button>
         </div>
       </div>

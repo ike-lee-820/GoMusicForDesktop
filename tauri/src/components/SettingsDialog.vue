@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 设置：字体 / 主题色 / 音质 / 倍速 / 简繁 / 网易云 / 更新 */
 import { onMounted, ref } from "vue"
+import Icon from "./Icon.vue"
 import { api } from "../api"
 import {
   checkUpdate, load, qualityLabel, setFontKind, setPref, setQuality, setSpeed,
@@ -46,7 +47,7 @@ async function doCheck() {
     <div class="dialog box" @click.stop>
       <div class="head">
         <span class="tt">设置</span>
-        <button class="iconbtn" @click="st.showSettings = false">✕</button>
+        <button class="iconbtn" title="关闭" @click="st.showSettings = false"><Icon name="close" :size="20" /></button>
       </div>
       <div class="body">
         <div class="grp">
@@ -111,7 +112,7 @@ async function doCheck() {
           <div class="gt">下载</div>
           <div class="rowline">
             <span class="muted">已下载 {{ st.downloads.length }} 首</span>
-            <button class="btn" @click="api.openDownloadDir()">打开下载目录</button>
+            <button class="btn" @click="api.openDownloadDir()"><Icon name="folder_open" :size="18" />打开下载目录</button>
           </div>
         </div>
 
@@ -120,7 +121,7 @@ async function doCheck() {
           <div class="rowline">
             <span class="muted">GoMusic 桌面版 {{ st.version }}</span>
             <button class="btn" :disabled="checking" @click="doCheck">
-              {{ checking ? "检查中…" : "检查更新" }}
+              <Icon name="update" :size="18" />{{ checking ? "检查中…" : "检查更新" }}
             </button>
             <button class="btn ghost" @click="load()">重新载入曲库</button>
           </div>

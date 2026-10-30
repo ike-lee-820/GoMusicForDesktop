@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 专辑 / 歌手卡片网格：点击进入详情，长按右键或按钮直接播放 */
 import type { Group } from "../types"
+import Icon from "./Icon.vue"
 import { playSongs } from "../store"
 
 const props = withDefaults(defineProps<{ groups: Group[]; wide?: boolean }>(), { wide: false })
@@ -16,14 +17,17 @@ const emit = defineEmits<{ (e: "open", g: Group): void }>()
       <div class="t ellip" @click="emit('open', g)">{{ g.title }}</div>
       <div class="s ellip muted">{{ g.subtitle || g.artist }}</div>
       <button v-if="g.songs.length" class="mini" title="播放全部"
-              @click="playSongs(g.songs, 0)">▶</button>
+              @click="playSongs(g.songs, 0)"><Icon name="play_arrow" :size="14" /></button>
     </div>
   </div>
 </template>
 
 <style scoped>
 .wrap { display: flex; flex-wrap: wrap; gap: 14px; padding: 4px 16px 16px; }
-.cell { position: relative; }
+.cell {
+  position: relative;
+  content-visibility: auto; contain-intrinsic-size: 150px 200px;
+}
 .cv {
   width: 100%; aspect-ratio: 1; border-radius: 10px; background-size: cover;
   background-position: center; background-color: var(--surface-hi); cursor: pointer;

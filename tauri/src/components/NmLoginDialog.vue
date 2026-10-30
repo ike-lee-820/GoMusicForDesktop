@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 网易云登录：扫码 + 验证码 */
 import { onBeforeUnmount, onMounted, ref } from "vue"
+import Icon from "./Icon.vue"
 import { api } from "../api"
 import { setPref, st, toast } from "../store"
 
@@ -66,7 +67,7 @@ onBeforeUnmount(() => clearInterval(timer))
     <div class="dialog box" @click.stop>
       <div class="head">
         <span class="tt">登录网易云</span>
-        <button class="iconbtn" @click="st.showLogin = false">✕</button>
+        <button class="iconbtn" title="关闭" @click="st.showLogin = false"><Icon name="close" :size="20" /></button>
       </div>
       <div class="tabs">
         <button class="btn" :class="{ primary: tab === 'qr' }" @click="tab = 'qr'">扫码登录</button>

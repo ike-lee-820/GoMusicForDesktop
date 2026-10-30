@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { st } from "../store"
+import Icon from "./Icon.vue"
 
 const items = [
-  { t: 0, name: "首页", icon: "⌂" },
-  { t: 1, name: "歌曲", icon: "♫" },
-  { t: 2, name: "专辑", icon: "▤" },
-  { t: 3, name: "歌手", icon: "☺" },
-  { t: 4, name: "歌单", icon: "≡" },
+  { t: 0, name: "首页", icon: "home" },
+  { t: 1, name: "歌曲", icon: "music_note" },
+  { t: 2, name: "专辑", icon: "album" },
+  { t: 3, name: "歌手", icon: "person" },
+  { t: 4, name: "歌单", icon: "playlist_play" },
 ]
 function choose(t: number) { st.tab = t; st.page = null; st.query = "" }
 </script>
@@ -16,11 +17,11 @@ function choose(t: number) { st.tab = t; st.page = null; st.query = "" }
     <div class="brand">GoMusic</div>
     <button v-for="i in items" :key="i.t" class="item" :class="{ on: st.tab === i.t && !st.page }"
             @click="choose(i.t)">
-      <span class="ic">{{ i.icon }}</span><span>{{ i.name }}</span>
+      <Icon :name="i.icon" :size="20" /><span>{{ i.name }}</span>
     </button>
     <div class="spacer" />
-    <button class="item" @click="st.showHistory = true"><span class="ic">↺</span><span>历史</span></button>
-    <button class="item" @click="st.showSettings = true"><span class="ic">⚙</span><span>设置</span></button>
+    <button class="item" @click="st.showHistory = true"><Icon name="history" :size="20" /><span>历史</span></button>
+    <button class="item" @click="st.showSettings = true"><Icon name="settings" :size="20" /><span>设置</span></button>
     <div class="state">{{ st.offline ? "离线模式" : "已连接" }}</div>
   </div>
 </template>
@@ -38,7 +39,6 @@ function choose(t: number) { st.tab = t; st.page = null; st.query = "" }
 }
 .item:hover { background: rgba(255, 255, 255, .05); }
 .item.on { background: rgba(208, 188, 255, .16); color: var(--primary); font-weight: 600; }
-.ic { width: 18px; text-align: center; opacity: .9; }
 .spacer { flex: 1; }
 .state { font-size: 11px; color: var(--muted); padding: 6px 20px; }
 </style>

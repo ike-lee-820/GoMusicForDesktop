@@ -7,6 +7,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { LrcLine } from "../types"
 import { zhText } from "../zh"
+import { st } from "../store"
 
 const props = withDefaults(defineProps<{
   lines: LrcLine[]
@@ -87,6 +88,13 @@ const geom = computed(() => {
   return { span, r, step, shift: (r * (1 - Math.cos(span * step))) / 2 }
 })
 
+// 转换结果缓存：OpenCC 转换不便宜，而下面 visible 每帧都要重算，
+// 不能让每帧都对十几行歌词跑一遍转换。只在歌词或简繁设置变化时重算。
+const converted = computed(() => {
+  const mode = st.zhConvert
+  return props.lines.map((l) => zhText(l.text, mode))
+})
+
 const visible = computed(() => {
   const g = geom.value
   const c = cur.value + dragOff.value
@@ -108,7 +116,7 @@ const visible = computed(() => {
       deg: (th * 180) / PI_F,
       alpha: fade,
       isCur: i === props.idx,
-      text: zhText(props.lines[i].text, undefined as any) || props.lines[i].text,
+      text: converted.value[i] ?? props.lines[i].text,
     })
   }
   return out

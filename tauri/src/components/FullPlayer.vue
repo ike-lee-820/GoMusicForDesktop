@@ -6,28 +6,33 @@
  */
 import { computed, ref, watch } from "vue"
 import ArcLyrics from "./ArcLyrics.vue"
+import Icon from "./Icon.vue"
+import { api } from "../api"
 import {
-  fmt, isDownloaded, lyricIndex, LOCAL_QUALITIES, nextSong, NM_QUALITIES, prevSong,
+  fmt, isDownloaded, LOCAL_QUALITIES, lyricIndex, NM_QUALITIES, nextSong, prevSong,
   qualityLabel, seek, setQuality, setSpeed, st, startCurrent, toggle, toast,
 } from "../store"
-import { api } from "../api"
 
 const ctrlOpen = ref(true)
 const showQueue = ref(false)
 const showQuality = ref(false)
 const showSpeed = ref(false)
-const showPick = ref(false)
 
 const cur = computed(() => st.cur)
 const isNm = computed(() => !!cur.value && (cur.value.source === "netease" || cur.value.ssid.startsWith("nm")))
 
+// 网易云可选音质按歌缓存：同一首反复打开播放器不必每次都查
+const levelCache = new Map<string, string[]>()
 const levels = ref<string[]>([])
 watch(cur, async (s) => {
   levels.value = []
   if (!s) return
-  if (s.source === "netease" || s.ssid.startsWith("nm")) {
-    levels.value = await api.nmAvailableLevels(s.ssid).catch(() => [])
-  }
+  if (!(s.source === "netease" || s.ssid.startsWith("nm"))) return
+  const hit = levelCache.get(s.ssid)
+  if (hit) { levels.value = hit; return }
+  const v = await api.nmAvailableLevels(s.ssid).catch(() => [])
+  levelCache.set(s.ssid, v)
+  levels.value = v
 }, { immediate: true })
 
 const qualityOptions = computed(() => {
@@ -39,6 +44,8 @@ const qualityOptions = computed(() => {
 })
 
 const speedOptions = [0.5, 0.75, 1, 1.25, 1.5, 2]
+const modeIcons = ["repeat", "shuffle", "repeat_one"]
+const modeNames = ["列表循环", "随机播放", "单曲循环"]
 
 async function playMv() {
   const s = cur.value
@@ -49,8 +56,15 @@ async function playMv() {
   st.showVideo = true
 }
 
-function onSeekRatio(r: number) {
-  if (st.durationMs > 0) seek(Math.round(r * st.durationMs))
+function onSeekRatio(e: MouseEvent) {
+  const el = e.currentTarget as HTMLElement
+  if (st.durationMs > 0) seek(Math.round((e.offsetX / el.clientWidth) * st.durationMs))
+}
+
+function cycleMode() {
+  st.playMode = (st.playMode + 1) % 3
+  api.setPref("playMode", String(st.playMode))
+  toast(modeNames[st.playMode])
 }
 
 const coverStyle = computed(() =>
@@ -62,53 +76,64 @@ const coverStyle = computed(() =>
   <div v-if="cur" class="fp">
     <!-- 顶栏 -->
     <div class="top">
-      <button class="iconbtn close" title="关闭播放器" @click="st.showFull = false">✕</button>
-      <div class="ctrls" :class="{ hide: !ctrlOpen }">
-        <div class="row">
-          <button v-if="cur.mvId" class="btn mv" title="播放 MV" @click="playMv">MV</button>
-          <button class="iconbtn" title="下载"
-                  :class="{ on: isDownloaded(cur.ssid) }"
-                  @click="st.showFull = false">{{ isDownloaded(cur.ssid) ? "✓" : "⇩" }}</button>
-          <button class="iconbtn" title="加入歌单" @click="showPick = true">＋</button>
+      <button class="iconbtn close" title="关闭播放器" @click="st.showFull = false">
+        <Icon name="close" :size="20" />
+      </button>
+      <div class="ctrls">
+        <div v-if="ctrlOpen" class="row">
+          <button v-if="cur.mvId" class="btn mv" title="播放 MV" @click="playMv">
+            <Icon name="music_video" :size="18" />MV
+          </button>
+          <button class="iconbtn" :class="{ on: isDownloaded(cur.ssid) }"
+                  :title="isDownloaded(cur.ssid) ? '已下载' : '下载'"
+                  @click="st.showFull = false">
+            <Icon :name="isDownloaded(cur.ssid) ? 'check_circle' : 'download'" :size="20" />
+          </button>
+          <button class="iconbtn" title="加入歌单" @click="st.showFull = false">
+            <Icon name="playlist_add" :size="20" />
+          </button>
           <button class="btn qbtn" title="音质" @click="showQuality = !showQuality">
-            {{ qualityLabel(st.quality) }}
+            <Icon name="high_quality" :size="16" />{{ qualityLabel(st.quality) }}
           </button>
           <button class="btn qbtn" title="倍速" @click="showSpeed = !showSpeed">
-            {{ st.speed }}×
+            <Icon name="speed" :size="16" />{{ st.speed }}×
           </button>
           <span class="sep" />
-          <button class="iconbtn" title="上一首" @click="prevSong">⏮</button>
+          <button class="iconbtn" title="上一首" @click="prevSong"><Icon name="skip_previous" :size="20" /></button>
           <button class="iconbtn play" :title="st.playing ? '暂停' : '播放'" @click="toggle">
-            {{ st.playing ? "⏸" : "▶" }}
+            <Icon :name="st.playing ? 'pause' : 'play_arrow'" :size="20" />
           </button>
-          <button class="iconbtn" title="下一首" @click="nextSong(true)">⏭</button>
+          <button class="iconbtn" title="下一首" @click="nextSong(true)"><Icon name="skip_next" :size="20" /></button>
           <span class="sep" />
           <span class="time">{{ fmt(st.positionMs) }}</span>
-          <div class="seek" @click="(e) => onSeekRatio(e.offsetX / (e.currentTarget as HTMLElement).clientWidth)">
+          <div class="seek" @click="onSeekRatio">
             <div class="track"><i :style="{ width: (st.durationMs ? st.positionMs / st.durationMs * 100 : 0) + '%' }" /></div>
           </div>
           <span class="time">{{ fmt(st.durationMs) }}</span>
           <span class="sep" />
-          <button class="iconbtn" title="播放列表" @click="showQueue = !showQueue">☰</button>
-          <button class="iconbtn mode" :title="['列表循环', '随机播放', '单曲循环'][st.playMode]"
-                  @click="st.playMode = (st.playMode + 1) % 3; api.setPref('playMode', String(st.playMode))">
-            {{ ["↻", "⤨", "①"][st.playMode] }}
+          <button class="iconbtn" :class="{ on: showQueue }" title="播放列表" @click="showQueue = !showQueue">
+            <Icon name="queue_music" :size="20" />
+          </button>
+          <button class="iconbtn" :title="modeNames[st.playMode]" @click="cycleMode">
+            <Icon :name="modeIcons[st.playMode]" :size="20" />
           </button>
         </div>
-        <!-- 音质 / 倍速 / 歌单浮层 -->
-        <div v-if="showQuality" class="pop">
+        <!-- 音质 / 倍速浮层 -->
+        <div v-if="showQuality && ctrlOpen" class="pop">
           <div v-for="o in qualityOptions" :key="o.k" class="pop-item"
                :class="{ on: o.k === st.quality }" @click="setQuality(o.k); showQuality = false">
             {{ o.label }}
           </div>
         </div>
-        <div v-if="showSpeed" class="pop">
+        <div v-if="showSpeed && ctrlOpen" class="pop">
           <div v-for="s in speedOptions" :key="s" class="pop-item" :class="{ on: s === st.speed }"
                @click="setSpeed(s); showSpeed = false">{{ s }}×</div>
         </div>
       </div>
       <button class="iconbtn arrow" :title="ctrlOpen ? '收起' : '展开'"
-              @click="ctrlOpen = !ctrlOpen">{{ ctrlOpen ? "‹" : "⌄" }}</button>
+              @click="ctrlOpen = !ctrlOpen">
+        <Icon :name="ctrlOpen ? 'chevron_left' : 'keyboard_arrow_down'" :size="22" />
+      </button>
     </div>
 
     <!-- 主体：封面 + 歌词 -->
@@ -122,7 +147,7 @@ const coverStyle = computed(() =>
       <div class="right">
         <ArcLyrics
           :lines="st.lyrics" :idx="lyricIndex" :loading="st.lyricLoading"
-          :color="'var(--primary)'" :row-spacing="63" :radius-boost="0.7"
+          color="var(--primary)" :row-spacing="63" :radius-boost="0.7"
           :min-span="3" :cur-sp="22" :other-sp="17"
           @seek="(ms) => seek(ms)"
         />
@@ -151,21 +176,16 @@ const coverStyle = computed(() =>
   display: flex; align-items: center; gap: 8px; padding: 10px 14px;
   border-bottom: 1px solid rgba(255, 255, 255, .07); flex: none;
 }
-.close { font-size: 18px; }
 .ctrls { flex: 1; min-width: 0; position: relative; }
-.ctrls.hide .row { display: none; }
-.ctrls .row {
-  display: flex; align-items: center; gap: 6px; overflow-x: auto;
-}
+.ctrls .row { display: flex; align-items: center; gap: 6px; overflow-x: auto; }
 .sep { width: 1px; height: 20px; background: rgba(255, 255, 255, .12); flex: none; margin: 0 2px; }
 .time { font-size: 12px; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
 .seek { flex: none; width: 160px; height: 24px; display: flex; align-items: center; cursor: pointer; }
 .track { width: 100%; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .2); }
 .track > i { display: block; height: 100%; background: #fff; border-radius: 2px; }
 .play { background: var(--primary) !important; color: var(--on-primary) !important; }
-.btn.qbtn { height: 28px; padding: 0 10px; font-size: 12px; }
-.btn.mv { height: 28px; padding: 0 9px; font-size: 12px; background: var(--primary); color: var(--on-primary); }
-.arrow { font-size: 18px; }
+.btn.qbtn { height: 28px; padding: 0 10px; font-size: 12px; gap: 4px; }
+.btn.mv { height: 28px; padding: 0 9px; font-size: 12px; gap: 4px; background: var(--primary); color: var(--on-primary); }
 .pop {
   position: absolute; top: 40px; left: 0; z-index: 5; min-width: 130px;
   background: var(--surface); border-radius: 12px; padding: 6px;

@@ -91,6 +91,9 @@ body.font-song { font-family: "GoSong", "Songti SC", "SimSun", serif; }
   display: block; color: var(--muted);
 }
 
+/* 图标与封面：避免成为合成层负担 */
+.ico { pointer-events: none; }
+
 .muted { color: var(--muted); }
 .ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
