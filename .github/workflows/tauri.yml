@@ -52,6 +52,21 @@ jobs:
           name: tauri-cargo-log
           path: tauri-cargo.log
 
+
+      # 日志存到本次 run 专属分支，避免与其它工作流的 ci-logs 分支互相覆盖
+      - name: 保存编译日志到独立分支
+        if: always() && matrix.platform == 'ubuntu-22.04'
+        run: |
+          git config user.name ci
+          git config user.email ci@example.com
+          BR=log-tauri-${{ github.run_id }}
+          git checkout -B $BR
+          mkdir -p ci
+          cp tauri-cargo.log ci/tauri-cargo.log
+          git add -f ci/tauri-cargo.log
+          git commit -m "ci: tauri cargo log ${{ github.run_id }}" || echo "no change"
+          git push -f origin $BR
+
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
         env:
