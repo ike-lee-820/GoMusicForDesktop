@@ -44,6 +44,19 @@ jobs:
         with:
           node-version: 20
 
+      - name: 复制字体到构建目录
+        shell: bash
+        run: |
+          # 思源宋体（22MB）放在仓库根级 public/fonts/，构建目录是 tauri/，
+          # 这里复制过去，前端 @font-face 才能找到 /fonts/song.otf
+          if [ -f public/fonts/song.otf ]; then
+            mkdir -p tauri/public/fonts
+            cp -f public/fonts/song.otf tauri/public/fonts/song.otf
+            ls -l tauri/public/fonts/
+          else
+            echo "根级没有 public/fonts/song.otf，跳过"
+          fi
+
       - name: 安装前端依赖
         working-directory: ./tauri
         run: npm install

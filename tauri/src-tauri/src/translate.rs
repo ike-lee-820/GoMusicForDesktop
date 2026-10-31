@@ -182,7 +182,7 @@ fn openrouter(spoken: &str) -> Option<String> {
     });
     let j: Value = client()
         .post(OR_URL)
-        .header("Authorization", format!("Bearer {}", key.unwrap_or_default()))
+        .header("Authorization", format!("Bearer {}", key))
         .json(&body)
         .send()
         .ok()?
