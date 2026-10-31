@@ -1,6 +1,6 @@
 [package]
 name = "gomusic"
-version = "26.10.6"
+version = "26.10.7"
 description = "GoMusic 桌面版"
 edition = "2021"
 rust-version = "1.77"
