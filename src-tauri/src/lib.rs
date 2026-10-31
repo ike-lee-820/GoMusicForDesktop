@@ -24,6 +24,8 @@ pub fn run() {
     install_panic_hook();
     // 启动时把已保存的 cookie 注入网易云
     netease::netease().set_cookie(prefs::PREFS.lock().nm_cookie.clone());
+    // 后台预拉曲库：前端首屏直接命中种子数据，不必干等网络
+    commands::preload_seed();
 
     tauri::Builder::default()
         .manage(commands::App::default())

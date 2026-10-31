@@ -33,6 +33,39 @@ impl Default for App {
     }
 }
 
+/// 正在下载的 ssid。放全局而不是 State：State 没法安全搬进 spawn_blocking
+static DOWNLOADING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// 网易云歌曲可用音质缓存（同理放全局）
+static NM_LEVELS: Mutex<Option<HashMap<i64, Vec<String>>>> = Mutex::new(None);
+
+fn nm_levels_cached(id: i64) -> Option<Vec<String>> {
+    NM_LEVELS.lock().as_ref().and_then(|m| m.get(&id)).cloned()
+}
+
+fn nm_levels_put(id: i64, v: Vec<String>) {
+    NM_LEVELS.lock().get_or_insert_with(HashMap::new).insert(id, v);
+}
+
+/// 启动种子数据：开个线程先拉好曲库，前端首屏直接命中缓存，不用等网络
+pub struct LibrarySeed {
+    pub songs: Vec<Song>,
+    pub artists: HashMap<String, ArtistInfo>,
+}
+pub static LIB_SEED: Mutex<Option<LibrarySeed>> = Mutex::new(None);
+
+/// 在 run() 里调用：后台预拉曲库，失败就算了，正常路径仍会兜底
+pub fn preload_seed() {
+    std::thread::spawn(|| {
+        if let Ok(songs) = api::songs(false) {
+            if songs.is_empty() { return; }
+            let artists = api::artists();
+            *LIB_SEED.lock() = Some(LibrarySeed { songs, artists });
+        }
+    });
+}
+
+fn take_seed() -> Option<LibrarySeed> { LIB_SEED.lock().take() }
+
 // ---------------- 曲库 ----------------
 
 #[derive(serde::Serialize)]
@@ -45,9 +78,28 @@ pub struct Library {
 }
 
 /// 加载本站曲库。连不上时进入离线模式：只展示已下载内容
+/// 同步命令会跑在主线程上：拉曲库是网络活，一旦慢就把界面整个冻住。
+/// 这里改成 async，真正干活的部分扔进 spawn_blocking 的线程池。
 #[tauri::command]
-pub fn load_library(app: State<'_, App>) -> Library {
+pub async fn load_library() -> Library {
+    tauri::async_runtime::spawn_blocking(load_library_sync)
+        .await
+        .unwrap_or_else(|_| load_library_sync())
+}
+
+fn load_library_sync() -> Library {
     let mut offline = false;
+    // 启动时预拉好的种子数据：命中就直接返回，首屏不用等网络
+    if let Some(seed) = take_seed() {
+        let p = PREFS.lock();
+        return Library {
+            songs: seed.songs,
+            offline: false,
+            artists: seed.artists,
+            downloads: p.downloads.clone(),
+            play_counts: p.play_counts.clone(),
+        };
+    }
     let songs = match api::songs(true) {
         Ok(s) => s,
         Err(_) => {
@@ -77,7 +129,11 @@ pub fn load_library(app: State<'_, App>) -> Library {
 pub fn get_prefs() -> prefs::PrefsFile { PREFS.lock().clone() }
 
 #[tauri::command]
-pub fn set_pref(key: String, value: String) {
+pub async fn set_pref(key: String, value: String) {
+    tauri::async_runtime::spawn_blocking(move || set_pref_sync(key, value)).await.ok();
+}
+
+fn set_pref_sync(key: String, value: String) {
     let mut p = PREFS.lock();
     match key.as_str() {
         "quality" => p.quality = value,
@@ -134,13 +190,18 @@ fn resolve_audio(song: &Song, quality: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn play_song(app: State<'_, App>, song: Song, quality: String) -> Result<Status, String> {
-    let path = resolve_audio(&song, &quality)?;
+pub async fn play_song(app: State<'_, App>, song: Song, quality: String) -> Result<Status, String> {
+    let ssid = song.ssid.clone();
+    let song2 = song.clone();
+    // 解析音源可能要下载音频文件，是最容易把界面冻住的一步
+    let path = tauri::async_runtime::spawn_blocking(move || resolve_audio(&song, &quality))
+        .await
+        .unwrap_or_else(|_| Err("播放任务失败".to_string()))?;
     let rate = PREFS.lock().speed;
     app.player.play(&path, 0, rate);
-    prefs::bump(&song.ssid);
-    prefs::push_history(&song.ssid);
-    prefs::remember(std::slice::from_ref(&song));
+    prefs::bump(&ssid);
+    prefs::push_history(&ssid);
+    prefs::remember(std::slice::from_ref(&song2));
     Ok(app.player.status())
 }
 
@@ -165,7 +226,13 @@ pub fn player_status(app: State<'_, App>) -> Status { app.player.status() }
 
 /// 当前歌曲的歌词：已下载读本地文件，网易云走 /lyric，本地曲库走 /api/lyrics
 #[tauri::command]
-pub fn load_lyric(ssid: String) -> Vec<LrcLine> {
+pub async fn load_lyric(ssid: String) -> Vec<LrcLine> {
+    tauri::async_runtime::spawn_blocking(move || load_lyric_sync(ssid))
+        .await
+        .unwrap_or_default()
+}
+
+fn load_lyric_sync(ssid: String) -> Vec<LrcLine> {
     let p = PREFS.lock();
     let rec = p.downloads.iter().find(|r| r.ssid == ssid).cloned();
     drop(p);
@@ -192,7 +259,13 @@ fn fetch_online_lyric(ssid: &str) -> String {
 // ---------------- 网易云 ----------------
 
 #[tauri::command]
-pub fn nm_search(kind: i32, keyword: String, limit: i32, offset: i32) -> NmSearchResult {
+pub async fn nm_search(kind: i32, keyword: String, limit: i32, offset: i32) -> NmSearchResult {
+    tauri::async_runtime::spawn_blocking(move || nm_search_sync(kind, keyword, limit, offset))
+        .await
+        .unwrap_or(NmSearchResult { songs: vec![], albums: vec![], artists: vec![] })
+}
+
+fn nm_search_sync(kind: i32, keyword: String, limit: i32, offset: i32) -> NmSearchResult {
     let kw = keyword.trim();
     if kw.is_empty() {
         return NmSearchResult { songs: vec![], albums: vec![], artists: vec![] };
@@ -228,7 +301,16 @@ pub struct HomeData {
 }
 
 #[tauri::command]
-pub fn nm_home(new_song_type: i32) -> HomeData {
+pub async fn nm_home(new_song_type: i32) -> HomeData {
+    tauri::async_runtime::spawn_blocking(move || nm_home_sync(new_song_type))
+        .await
+        .unwrap_or(HomeData {
+            recommend: vec![], new_songs: vec![], hot_words: vec![],
+            top_artists: vec![], new_albums: vec![], tops: vec![],
+        })
+}
+
+fn nm_home_sync(new_song_type: i32) -> HomeData {
     let nm = netease();
     HomeData {
         recommend: nm.recommend_songs(),
@@ -241,31 +323,50 @@ pub fn nm_home(new_song_type: i32) -> HomeData {
 }
 
 #[tauri::command]
-pub fn nm_songs_of(kind: String, id: i64, limit: i32, offset: i32) -> Vec<Song> {
-    netease().songs_of(&kind, id, limit, offset)
+pub async fn nm_songs_of(kind: String, id: i64, limit: i32, offset: i32) -> Vec<Song> {
+    tauri::async_runtime::spawn_blocking(move || netease().songs_of(&kind, id, limit, offset))
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn nm_artist_albums(id: i64, limit: i32, offset: i32) -> Vec<Group> {
-    netease().artist_albums(id, limit, offset)
+pub async fn nm_artist_albums(id: i64, limit: i32, offset: i32) -> Vec<Group> {
+    tauri::async_runtime::spawn_blocking(move || netease().artist_albums(id, limit, offset))
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn nm_available_levels(app: State<'_, App>, ssid: String) -> Vec<String> {
+pub async fn nm_available_levels(ssid: String) -> Vec<String> {
     let id = match netease_id_of(&ssid) { Some(i) => i, None => return vec![] };
-    {
-        let c = app.nm_levels.lock();
-        if let Some(v) = c.get(&id) { return v.clone(); }
-    }
-    let v = netease().available_levels(id);
-    app.nm_levels.lock().insert(id, v.clone());
+    if let Some(v) = nm_levels_cached(id) { return v; }
+    let v = tauri::async_runtime::spawn_blocking(move || netease().available_levels(id))
+        .await
+        .unwrap_or_default();
+    nm_levels_put(id, v.clone());
     v
 }
 
 #[tauri::command]
-pub fn nm_qr_key() -> Option<String> { netease().qr_key() }
+pub async fn nm_qr_key() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || nm_qr_key_sync())
+        .await
+        .unwrap_or(None)
+}
+
+fn nm_qr_key_sync() -> Option<String> {
+    netease().qr_key()
+}
 #[tauri::command]
-pub fn nm_qr_image(key: String) -> Option<String> { netease().qr_image(&key) }
+pub async fn nm_qr_image(key: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || nm_qr_image_sync(key))
+        .await
+        .unwrap_or(None)
+}
+
+fn nm_qr_image_sync(key: String) -> Option<String> {
+    netease().qr_image(&key)
+}
 
 #[derive(serde::Serialize)]
 pub struct QrStatus {
@@ -276,27 +377,71 @@ pub struct QrStatus {
 
 /// 800 过期 801 等待扫码 802 待确认 803 成功
 #[tauri::command]
-pub fn nm_qr_check(key: String) -> QrStatus {
+pub async fn nm_qr_check(key: String) -> QrStatus {
+    tauri::async_runtime::spawn_blocking(move || nm_qr_check_sync(key))
+        .await
+        .unwrap_or(QrStatus { code: 800, cookie: None, message: "检查失败".into() })
+}
+
+fn nm_qr_check_sync(key: String) -> QrStatus {
     let (code, cookie, message) = netease().qr_check(&key);
     QrStatus { code, cookie, message }
 }
 
 #[tauri::command]
-pub fn nm_login_captcha(phone: String, captcha: String) -> Option<String> {
+pub async fn nm_login_captcha(phone: String, captcha: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || nm_login_captcha_sync(phone, captcha))
+        .await
+        .unwrap_or(None)
+}
+
+fn nm_login_captcha_sync(phone: String, captcha: String) -> Option<String> {
     netease().login_by_captcha(&phone, &captcha)
 }
 
 #[tauri::command]
-pub fn nm_send_captcha(phone: String) -> bool { netease().send_captcha(&phone) }
+pub async fn nm_send_captcha(phone: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || nm_send_captcha_sync(phone))
+        .await
+        .unwrap_or(false)
+}
+
+fn nm_send_captcha_sync(phone: String) -> bool {
+    netease().send_captcha(&phone)
+}
 
 #[tauri::command]
-pub fn nm_account_name() -> Option<String> { netease().account_name() }
+pub async fn nm_account_name() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || nm_account_name_sync())
+        .await
+        .unwrap_or(None)
+}
+
+fn nm_account_name_sync() -> Option<String> {
+    netease().account_name()
+}
 
 #[tauri::command]
-pub fn nm_logged_in() -> bool { netease().logged_in() }
+pub async fn nm_logged_in() -> bool {
+    tauri::async_runtime::spawn_blocking(move || nm_logged_in_sync())
+        .await
+        .unwrap_or(false)
+}
+
+fn nm_logged_in_sync() -> bool {
+    netease().logged_in()
+}
 
 #[tauri::command]
-pub fn nm_mv_url(mv_id: i64) -> Option<String> { netease().mv_url(mv_id) }
+pub async fn nm_mv_url(mv_id: i64) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || nm_mv_url_sync(mv_id))
+        .await
+        .unwrap_or(None)
+}
+
+fn nm_mv_url_sync(mv_id: i64) -> Option<String> {
+    netease().mv_url(mv_id)
+}
 
 /// 整篇歌词翻译。
 ///
@@ -312,7 +457,13 @@ pub async fn translate_lines(texts: Vec<String>) -> Vec<String> {
 // ---------------- 歌单 ----------------
 
 #[tauri::command]
-pub fn create_playlist(name: String, songs: Vec<String>, cover: Option<String>) -> Vec<Playlist> {
+pub async fn create_playlist(name: String, songs: Vec<String>, cover: Option<String>) -> Vec<Playlist> {
+    tauri::async_runtime::spawn_blocking(move || create_playlist_sync(name, songs, cover))
+        .await
+        .unwrap_or(vec![])
+}
+
+fn create_playlist_sync(name: String, songs: Vec<String>, cover: Option<String>) -> Vec<Playlist> {
     let mut p = PREFS.lock();
     let id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0).to_string();
@@ -324,7 +475,13 @@ pub fn create_playlist(name: String, songs: Vec<String>, cover: Option<String>) 
 }
 
 #[tauri::command]
-pub fn rename_playlist(id: String, name: String) -> Vec<Playlist> {
+pub async fn rename_playlist(id: String, name: String) -> Vec<Playlist> {
+    tauri::async_runtime::spawn_blocking(move || rename_playlist_sync(id, name))
+        .await
+        .unwrap_or(vec![])
+}
+
+fn rename_playlist_sync(id: String, name: String) -> Vec<Playlist> {
     let mut p = PREFS.lock();
     if let Some(pl) = p.playlists.iter_mut().find(|x| x.id == id) {
         pl.name = name.trim().to_string();
@@ -336,7 +493,13 @@ pub fn rename_playlist(id: String, name: String) -> Vec<Playlist> {
 }
 
 #[tauri::command]
-pub fn delete_playlist(id: String) -> Vec<Playlist> {
+pub async fn delete_playlist(id: String) -> Vec<Playlist> {
+    tauri::async_runtime::spawn_blocking(move || delete_playlist_sync(id))
+        .await
+        .unwrap_or(vec![])
+}
+
+fn delete_playlist_sync(id: String) -> Vec<Playlist> {
     let mut p = PREFS.lock();
     p.playlists.retain(|x| x.id != id);
     let out = p.playlists.clone();
@@ -346,7 +509,13 @@ pub fn delete_playlist(id: String) -> Vec<Playlist> {
 }
 
 #[tauri::command]
-pub fn add_to_playlist(id: String, ids: Vec<String>) -> Vec<Playlist> {
+pub async fn add_to_playlist(id: String, ids: Vec<String>) -> Vec<Playlist> {
+    tauri::async_runtime::spawn_blocking(move || add_to_playlist_sync(id, ids))
+        .await
+        .unwrap_or(vec![])
+}
+
+fn add_to_playlist_sync(id: String, ids: Vec<String>) -> Vec<Playlist> {
     let mut p = PREFS.lock();
     if let Some(pl) = p.playlists.iter_mut().find(|x| x.id == id) {
         for s in ids { if !pl.songs.contains(&s) { pl.songs.push(s); } }
@@ -358,7 +527,13 @@ pub fn add_to_playlist(id: String, ids: Vec<String>) -> Vec<Playlist> {
 }
 
 #[tauri::command]
-pub fn remove_from_playlist(id: String, ssid: String) -> Vec<Playlist> {
+pub async fn remove_from_playlist(id: String, ssid: String) -> Vec<Playlist> {
+    tauri::async_runtime::spawn_blocking(move || remove_from_playlist_sync(id, ssid))
+        .await
+        .unwrap_or(vec![])
+}
+
+fn remove_from_playlist_sync(id: String, ssid: String) -> Vec<Playlist> {
     let mut p = PREFS.lock();
     if let Some(pl) = p.playlists.iter_mut().find(|x| x.id == id) {
         pl.songs.retain(|s| s != &ssid);
@@ -370,7 +545,13 @@ pub fn remove_from_playlist(id: String, ssid: String) -> Vec<Playlist> {
 }
 
 #[tauri::command]
-pub fn move_in_playlist(id: String, from: usize, to: usize) -> Vec<Playlist> {
+pub async fn move_in_playlist(id: String, from: usize, to: usize) -> Vec<Playlist> {
+    tauri::async_runtime::spawn_blocking(move || move_in_playlist_sync(id, from, to))
+        .await
+        .unwrap_or(vec![])
+}
+
+fn move_in_playlist_sync(id: String, from: usize, to: usize) -> Vec<Playlist> {
     let mut p = PREFS.lock();
     if let Some(pl) = p.playlists.iter_mut().find(|x| x.id == id) {
         if from < pl.songs.len() && to < pl.songs.len() {
@@ -385,29 +566,37 @@ pub fn move_in_playlist(id: String, from: usize, to: usize) -> Vec<Playlist> {
 }
 
 #[tauri::command]
-pub fn remember_songs(songs: Vec<Song>) { prefs::remember(&songs); }
+pub async fn remember_songs(songs: Vec<Song>) {
+    tauri::async_runtime::spawn_blocking(move || prefs::remember(&songs)).await.ok();
+}
 
 // ---------------- 下载 ----------------
 
 #[tauri::command]
-pub fn download_songs(app: State<'_, App>, songs: Vec<Song>, quality: String) -> Result<(), String> {
+pub async fn download_songs(songs: Vec<Song>, quality: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || download_songs_sync(songs, quality))
+        .await
+        .unwrap_or_else(|_| Err("下载任务失败".to_string()))
+}
+
+fn download_songs_sync(songs: Vec<Song>, quality: String) -> Result<(), String> {
     let todo: Vec<Song> = {
         let p = PREFS.lock();
-        let dl = app.downloading.lock();
+        let dl = DOWNLOADING.lock();
         songs.into_iter()
             .filter(|s| !p.downloads.iter().any(|r| r.ssid == s.ssid) && !dl.contains(&s.ssid))
             .collect()
     };
     if todo.is_empty() { return Ok(()); }
     {
-        let mut dl = app.downloading.lock();
+        let mut dl = DOWNLOADING.lock();
         for s in &todo { dl.push(s.ssid.clone()); }
     }
     let total = todo.len() as i32;
     for (i, s) in todo.iter().enumerate() {
         let title = s.title.clone();
         {
-            let mut d = app.dl.lock();
+            let mut d = DL.lock();
             *d = Some(DlStatus {
                 title: title.clone(), index: (i + 1) as i32, total,
                 done: 0, size: 0, bps: 0,
@@ -440,9 +629,9 @@ pub fn download_songs(app: State<'_, App>, songs: Vec<Song>, quality: String) ->
         }
         drop(p);
         prefs::save();
-        app.downloading.lock().retain(|x| x != &s.ssid);
+        DOWNLOADING.lock().retain(|x| x != &s.ssid);
     }
-    *app.dl.lock() = None;
+    *DL.lock() = None;
     Ok(())
 }
 
@@ -456,10 +645,16 @@ fn set_dl_progress(title: String, index: i32, total: i32, done: i64, size: i64, 
 }
 
 #[tauri::command]
-pub fn download_status(_app: State<'_, App>) -> Option<DlStatus> { DL.lock().clone() }
+pub fn download_status() -> Option<DlStatus> { DL.lock().clone() }
 
 #[tauri::command]
-pub fn delete_download(ssid: String) -> Vec<DownloadRecord> {
+pub async fn delete_download(ssid: String) -> Vec<DownloadRecord> {
+    tauri::async_runtime::spawn_blocking(move || delete_download_sync(ssid))
+        .await
+        .unwrap_or_default()
+}
+
+fn delete_download_sync(ssid: String) -> Vec<DownloadRecord> {
     let mut p = PREFS.lock();
     let rec = p.downloads.iter().find(|r| r.ssid == ssid).cloned();
     if let Some(r) = rec { store::delete(&r); }
@@ -472,7 +667,13 @@ pub fn delete_download(ssid: String) -> Vec<DownloadRecord> {
 
 /// 下载 MV 视频文件到下载目录的 MV 子目录
 #[tauri::command]
-pub fn download_mv(title: String, url: String) -> Result<String, String> {
+pub async fn download_mv(title: String, url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || download_mv_sync(title, url))
+        .await
+        .unwrap_or_else(|_| Err("下载任务失败".to_string()))
+}
+
+fn download_mv_sync(title: String, url: String) -> Result<String, String> {
     {
         let mut d = app_dl();
         *d = Some(DlStatus { title: title.clone(), index: 1, total: 1, done: 0, size: 0, bps: 0 });
@@ -496,7 +697,11 @@ pub fn download_mv(title: String, url: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn open_download_dir() {
+pub async fn open_download_dir() {
+    tauri::async_runtime::spawn_blocking(open_download_dir_sync).await.ok();
+}
+
+fn open_download_dir_sync() {
     let p = store::root();
     #[cfg(target_os = "windows")]
     { let _ = std::process::Command::new("explorer").arg(p).spawn(); }
@@ -520,14 +725,34 @@ pub fn nm_level_label_of(k: String) -> String { nm_level_label(&k) }
 // ---------------- 补充：榜单 / 网易云歌单同步 / 更新 ----------------
 
 #[tauri::command]
-pub fn nm_top_list() -> Vec<Group> { netease().top_list() }
+pub async fn nm_top_list() -> Vec<Group> {
+    tauri::async_runtime::spawn_blocking(move || nm_top_list_sync())
+        .await
+        .unwrap_or(vec![])
+}
+
+fn nm_top_list_sync() -> Vec<Group> {
+    netease().top_list()
+}
 
 #[tauri::command]
-pub fn nm_artist_detail(id: i64) -> Option<Group> { netease().artist_detail(id) }
+pub async fn nm_artist_detail(id: i64) -> Option<Group> {
+    tauri::async_runtime::spawn_blocking(move || nm_artist_detail_sync(id))
+        .await
+        .unwrap_or(None)
+}
+
+fn nm_artist_detail_sync(id: i64) -> Option<Group> {
+    netease().artist_detail(id)
+}
 
 /// 我创建的网易云歌单（用于同步）
 #[tauri::command]
-pub fn nm_user_playlists() -> Vec<Group> {
+pub async fn nm_user_playlists() -> Vec<Group> {
+    tauri::async_runtime::spawn_blocking(nm_user_playlists_sync).await.unwrap_or_default()
+}
+
+fn nm_user_playlists_sync() -> Vec<Group> {
     let uid = netease().uid();
     if uid <= 0 { return Vec::new(); }
     netease().user_playlists(uid)
@@ -535,7 +760,13 @@ pub fn nm_user_playlists() -> Vec<Group> {
 
 /// 把歌曲加进网易云歌单；只同步网易云歌曲（本站歌曲在云端不存在）
 #[tauri::command]
-pub fn nm_playlist_add(pid: i64, ids: Vec<String>) -> bool {
+pub async fn nm_playlist_add(pid: i64, ids: Vec<String>) -> bool {
+    tauri::async_runtime::spawn_blocking(move || nm_playlist_add_sync(pid, ids))
+        .await
+        .unwrap_or(false)
+}
+
+fn nm_playlist_add_sync(pid: i64, ids: Vec<String>) -> bool {
     if pid <= 0 { return false; }
     let tids: Vec<i64> = ids.iter().filter_map(|x| netease_id_of(x)).collect();
     if tids.is_empty() { return false; }
@@ -543,7 +774,13 @@ pub fn nm_playlist_add(pid: i64, ids: Vec<String>) -> bool {
 }
 
 #[tauri::command]
-pub fn nm_playlist_del(pid: i64, ids: Vec<String>) -> bool {
+pub async fn nm_playlist_del(pid: i64, ids: Vec<String>) -> bool {
+    tauri::async_runtime::spawn_blocking(move || nm_playlist_del_sync(pid, ids))
+        .await
+        .unwrap_or(false)
+}
+
+fn nm_playlist_del_sync(pid: i64, ids: Vec<String>) -> bool {
     if pid <= 0 { return false; }
     let tids: Vec<i64> = ids.iter().filter_map(|x| netease_id_of(x)).collect();
     if tids.is_empty() { return false; }
@@ -551,7 +788,13 @@ pub fn nm_playlist_del(pid: i64, ids: Vec<String>) -> bool {
 }
 
 #[tauri::command]
-pub fn nm_playlist_rename(pid: i64, name: String) -> bool {
+pub async fn nm_playlist_rename(pid: i64, name: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || nm_playlist_rename_sync(pid, name))
+        .await
+        .unwrap_or(false)
+}
+
+fn nm_playlist_rename_sync(pid: i64, name: String) -> bool {
     if pid <= 0 { return false; }
     netease().playlist_rename(pid, &name)
 }
@@ -565,7 +808,11 @@ pub struct UpdateInfo {
 
 /// 检查更新：拉 release 列表取版本号最大的（/releases/latest 会漏掉预发布与草稿）
 #[tauri::command]
-pub fn check_update() -> Option<UpdateInfo> {
+pub async fn check_update() -> Option<UpdateInfo> {
+    tauri::async_runtime::spawn_blocking(check_update_sync).await.ok().flatten()
+}
+
+fn check_update_sync() -> Option<UpdateInfo> {
     let mirrors = [
         "https://gh-proxy.com/",
         "https://ghfast.top/",
@@ -646,7 +893,13 @@ pub fn open_url(url: String) {
 }
 
 #[tauri::command]
-pub fn remove_history(ssid: String) -> Vec<String> {
+pub async fn remove_history(ssid: String) -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(move || remove_history_sync(ssid))
+        .await
+        .unwrap_or_default()
+}
+
+fn remove_history_sync(ssid: String) -> Vec<String> {
     let mut p = PREFS.lock();
     p.history.retain(|x| x != &ssid);
     let h = p.history.clone();
@@ -656,7 +909,11 @@ pub fn remove_history(ssid: String) -> Vec<String> {
 }
 
 #[tauri::command]
-pub fn clear_history() -> Vec<String> {
+pub async fn clear_history() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(clear_history_sync).await.unwrap_or_default()
+}
+
+fn clear_history_sync() -> Vec<String> {
     let mut p = PREFS.lock();
     p.history.clear();
     drop(p);
