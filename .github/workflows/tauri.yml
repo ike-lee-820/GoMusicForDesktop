@@ -52,13 +52,15 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
+          # 日志直接写进 ci/，保证后面的日志分支一定拿得到
+          mkdir -p ci
+          : > ci/build.log
           cd tauri
-          npm run build > ../build.log 2>&1
-          echo "npm build exit=$?" >> ../build.log
+          npm run build > ../ci/build.log 2>&1
+          echo "npm build exit=$?" >> ../ci/build.log
           cd ..
-          cargo check --manifest-path tauri/src-tauri/Cargo.toml >> build.log 2>&1
-          echo "cargo check exit=$?" >> build.log
-          tail -500 build.log > build_tail.log || true
+          cargo check --manifest-path tauri/src-tauri/Cargo.toml >> ci/build.log 2>&1
+          echo "cargo check exit=$?" >> ci/build.log
 
       - name: 保存编译日志到独立分支
         if: always()
@@ -69,7 +71,7 @@ jobs:
           BR=log-tauri-${{ github.run_id }}
           git checkout -B "$BR"
           mkdir -p ci
-          cp build_tail.log "ci/build-${{ matrix.platform }}.log" || echo "no log"
+          cp ci/build.log "ci/build-${{ matrix.platform }}.log" || echo "no log"
           git add -f "ci/build-${{ matrix.platform }}.log" || true
           git commit -m "ci: tauri build log ${{ matrix.platform }} ${{ github.run_id }}" || echo "no change"
           git push -f origin "$BR" || echo "push failed"
