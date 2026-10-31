@@ -103,11 +103,12 @@ const coverStyle = computed(() =>
           <button v-if="cur.mvId && mvOk[cur.ssid] === true" class="iconbtn" title="播放 MV" @click="playMv">
             <Icon name="music_video" :size="20" />
           </button>
-          <!-- 翻译：歌词里有非中文才出现 -->
-          <button v-if="lyricNeedTrans" class="iconbtn" :class="{ on: lyricHasTrans && st.showTrans }"
+          <!-- 翻译：歌词里有非中文才出现。用「译」字，一眼就懂 -->
+          <button v-if="lyricNeedTrans" class="iconbtn trans-btn"
+                  :class="{ on: lyricHasTrans && st.showTrans }"
                   :title="st.transLoading ? '正在翻译…' : (lyricHasTrans ? '译文显示中，点击隐藏' : '翻译歌词')"
                   @click="translateLyric()">
-            <Icon v-if="!st.transLoading" name="translate" :size="20" />
+            <span v-if="!st.transLoading">译</span>
             <span v-else class="mini-spin" />
           </button>
           <button class="iconbtn" :class="{ on: isDownloaded(cur.ssid) }"
@@ -212,6 +213,8 @@ const coverStyle = computed(() =>
 .track > i { display: block; height: 100%; background: #fff; border-radius: 2px; }
 .play { background: var(--primary) !important; color: var(--on-primary) !important; }
 .btn.qbtn { height: 28px; padding: 0 10px; font-size: 12px; gap: 4px; }
+.trans-btn { font-size: 15px; font-weight: 700; }
+.trans-btn.on { color: var(--primary); }
 .mini-spin {
   width: 14px; height: 14px; border-radius: 50%; display: inline-block;
   border: 2px solid rgba(255, 255, 255, .25); border-top-color: #fff;

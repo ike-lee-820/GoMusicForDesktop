@@ -35,9 +35,27 @@ export function hasNonChinese(s: string): boolean {
   return NON_CHINESE.test(s)
 }
 
-/** 歌词是否含非中文部分（含则提供翻译按钮） */
+/**
+ * 作词 / 作曲 / 编曲这类标注行里的字（简体与繁体各三个）。
+ *
+ * 这些行几乎都带英文人名（「作曲 : John Doe」「编曲 : XXX」），
+ * 会把整篇误判成外文歌词、白白多出一个翻译按钮。
+ * 判断「要不要翻译」时先把它们排除掉。
+ */
+const CREDIT_RE = /[词詞曲麯编編]/
+
+/** 是否是「词 / 曲 / 编」这类标注行 */
+function isCreditLine(s: string): boolean {
+  return CREDIT_RE.test(s)
+}
+
+/**
+ * 歌词是否含非中文部分（含则提供翻译按钮）。
+ *
+ * 排除标注行，避免英文人名触发；全中文的歌词自然不会命中，不翻译。
+ */
 export function lyricNeedsTranslation(rows: LyricRow[]): boolean {
-  return rows.some((r) => hasNonChinese(r.text))
+  return rows.some((r) => !isCreditLine(r.text) && hasNonChinese(r.text))
 }
 
 /**

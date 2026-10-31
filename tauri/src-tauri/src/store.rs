@@ -10,6 +10,8 @@ pub const AUDIO_DIR: &str = "音乐";
 pub const COVER_DIR: &str = "封面";
 pub const LYRIC_DIR: &str = "歌词";
 pub const META_DIR: &str = "歌曲信息";
+/// MV 视频单独放一个目录：和音频不是一个东西，混在「音乐」里不好找
+pub const MV_DIR: &str = "MV";
 
 /// 下载根目录：优先 ~/Downloads，没有就用 ~/Music
 pub fn root() -> PathBuf {
@@ -149,6 +151,26 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 pub fn read_text(ref_: &str) -> String {
     if ref_.trim().is_empty() { return String::new(); }
     std::fs::read_to_string(ref_).unwrap_or_default()
+}
+
+/// 下载 MV 视频到 MV 目录下，返回保存路径。
+///
+/// MV 是直链视频（多数是 mp4），直接按流写入即可，不用像歌曲那样
+/// 另外补封面 / 歌词 / 信息文件，也不写下载记录（它不是一首歌）。
+pub fn download_mv(
+    title: &str,
+    url: &str,
+    on_progress: Option<&mut dyn FnMut(u64, u64)>,
+) -> Result<String, String> {
+    let ext = {
+        let p: String = url.split('?').next().unwrap_or("").to_string();
+        let e = p.rsplit('.').next().unwrap_or("mp4").to_string();
+        if (2..=4).contains(&e.len()) { e } else { "mp4".to_string() }
+    };
+    let file = sub(MV_DIR).join(format!("{}.{}", safe(title), ext));
+    let path = file.to_string_lossy().to_string();
+    api::fetch_to_file(url, &path, on_progress)?;
+    Ok(path)
 }
 
 pub fn delete(rec: &DownloadRecord) {

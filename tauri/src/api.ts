@@ -71,6 +71,7 @@ export const api = {
   downloadSongs: (songs: Song[], quality: string) =>
     invoke<void>("download_songs", { songs, quality }),
   downloadStatus: () => invoke<DlStatus | null>("download_status"),
+  downloadMv: (title: string, url: string) => invoke<string>("download_mv", { title, url }),
   deleteDownload: (ssid: string) => invoke<DownloadRecord[]>("delete_download", { ssid }),
   openDownloadDir: () => invoke<void>("open_download_dir"),
 

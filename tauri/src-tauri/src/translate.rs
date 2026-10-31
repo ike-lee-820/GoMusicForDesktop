@@ -20,8 +20,11 @@ use std::time::Duration;
 const MAIN_URL: &str = "https://translate.mapi.myocd.de5.net/translate";
 const AI_URL: &str = "https://api.sizhi.com/chat";
 const AI_APPID: &str = "b179db75c4804ae5954d2e7ad794e5bd";
-const AI_PROMPT: &str =
-    "输出中文翻译，要顺口且诗意且精简的歌词式翻译，原句没有逗号尽量不使用逗号分句，禁止给出其他内容纯翻译：";
+/// AI 兜底的提示语：必须点明「中文」，否则它经常自作主张用英文回答
+const AI_PROMPT: &str = concat!(
+    "把下面这句歌词翻译成简体中文，要顺口且诗意且精简的歌词式翻译，",
+    "原句没有逗号尽量不使用逗号分句，禁止给出其他内容纯翻译，禁止用英文回答：",
+);
 
 /// 每批并发多少个：一次性撒几十个请求容易把接口拖慢，
 /// 分批仍是「一次翻译完整篇」，只是批内并发、批间串行。
@@ -59,16 +62,26 @@ pub fn translate_all(texts: Vec<String>) -> Vec<String> {
     out
 }
 
-/// 单句：主接口拿不到就用 AI 兜底
+/// 单句：主接口拿不到就用 AI 兜底。
+///
+/// 结果必须真的含中文才算数 —— 主接口偶尔会把目标语言弄错返回英文，
+/// AI 也常自作主张用英文回答，那种结果直接丢弃（留空，不显示假译文）。
 fn translate_one(c: &Client, text: &str) -> Option<String> {
     let t = text.trim();
     if t.is_empty() {
         return None;
     }
     if let Some(v) = main_api(c, t) {
-        return Some(clean(&v));
+        if has_chinese(&v) {
+            return Some(clean(&v));
+        }
     }
-    ai_api(c, t).map(|v| clean(&v))
+    ai_api(c, t).filter(|v| has_chinese(v)).map(|v| clean(&v))
+}
+
+/// 译文里有没有汉字：接口返回英文说明目标语言没生效，不能用
+fn has_chinese(s: &str) -> bool {
+    s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
 }
 
 fn main_api(c: &Client, text: &str) -> Option<String> {

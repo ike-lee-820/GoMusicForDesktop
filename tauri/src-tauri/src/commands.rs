@@ -449,6 +449,8 @@ pub fn download_songs(app: State<'_, App>, songs: Vec<Song>, quality: String) ->
 /// 下载进度回调要跨闭包更新，用全局槽位中转
 static DL: Mutex<Option<DlStatus>> = Mutex::new(None);
 
+fn app_dl() -> parking_lot::MutexGuard<'static, Option<DlStatus>> { DL.lock() }
+
 fn set_dl_progress(title: String, index: i32, total: i32, done: i64, size: i64, bps: i64) {
     *DL.lock() = Some(DlStatus { title, index, total, done, size, bps });
 }
@@ -466,6 +468,31 @@ pub fn delete_download(ssid: String) -> Vec<DownloadRecord> {
     drop(p);
     prefs::save();
     out
+}
+
+/// 下载 MV 视频文件到下载目录的 MV 子目录
+#[tauri::command]
+pub fn download_mv(title: String, url: String) -> Result<String, String> {
+    {
+        let mut d = app_dl();
+        *d = Some(DlStatus { title: title.clone(), index: 1, total: 1, done: 0, size: 0, bps: 0 });
+    }
+    let started = std::time::Instant::now();
+    let mut last_bytes = 0u64;
+    let mut last_time = started;
+    let t = title.clone();
+    let mut cb = move |done: u64, size: u64| {
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(last_time).as_millis() as u64;
+        if dt < 400 && done < size { return; }
+        let bps = if dt > 0 { ((done.saturating_sub(last_bytes)) * 1000 / dt) as i64 } else { 0 };
+        last_bytes = done;
+        last_time = now;
+        set_dl_progress(t.clone(), 1, 1, done as i64, size as i64, bps);
+    };
+    let r = store::download_mv(&title, &url, Some(&mut cb));
+    *app_dl() = None;
+    r
 }
 
 #[tauri::command]

@@ -61,6 +61,7 @@ pub fn run() {
             commands::move_in_playlist,
             commands::remember_songs,
             commands::download_songs,
+            commands::download_mv,
             commands::download_status,
             commands::delete_download,
             commands::open_download_dir,
