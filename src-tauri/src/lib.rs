@@ -1,5 +1,4 @@
 pub mod api;
-mod font;
 pub mod commands;
 pub mod models;
 pub mod netease;
@@ -67,8 +66,6 @@ pub fn run() {
             commands::delete_download,
             commands::open_download_dir,
             commands::app_version,
-            commands::song_font_ready,
-            commands::song_font_download,
             commands::quality_label_of,
             commands::nm_level_label_of,
             commands::nm_top_list,

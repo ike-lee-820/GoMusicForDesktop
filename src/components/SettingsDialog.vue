@@ -4,7 +4,7 @@ import { onMounted, ref } from "vue"
 import Icon from "./Icon.vue"
 import { api } from "../api"
 import {
-  checkUpdate, downloadSongFont, load, qualityLabel, setFontKind, setPref, setQuality, setSpeed,
+  checkUpdate, load, qualityLabel, setFontKind, setPref, setQuality, setSpeed,
   setThemeColor, setZhConvert, st, toast,
 } from "../store"
 
@@ -55,13 +55,6 @@ async function doCheck() {
           <div class="opts">
             <button v-for="f in fonts" :key="f.v" class="btn" :class="{ primary: st.fontKind === f.v }"
                     @click="setFontKind(f.v)">{{ f.n }}</button>
-            <div v-if="st.fontKind === 1" class="hint">
-              <template v-if="st.fontDl >= 0">正在下载字体 {{ st.fontDl }}%</template>
-              <template v-else-if="st.fontLoaded">思源宋体已就绪</template>
-              <template v-else>
-                <button class="btn" @click="downloadSongFont()">下载思源宋体（约 25MB，仅需一次）</button>
-              </template>
-            </div>
           </div>
           <div class="hint muted">切换后立即生效，下次启动保持。</div>
         </div>

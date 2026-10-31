@@ -45,18 +45,6 @@ pub struct Library {
 }
 
 /// 加载本站曲库。连不上时进入离线模式：只展示已下载内容
-/// 思源宋体是否已下载好
-#[tauri::command]
-pub fn song_font_ready(app: tauri::AppHandle) -> bool {
-    crate::font::is_ready(&app)
-}
-
-/// 下载思源宋体，返回本地文件路径（进度通过 font-progress 事件推送）
-#[tauri::command]
-pub async fn song_font_download(app: tauri::AppHandle) -> Result<String, String> {
-    crate::font::download(app).await
-}
-
 #[tauri::command]
 pub fn load_library(app: State<'_, App>) -> Library {
     let mut offline = false;

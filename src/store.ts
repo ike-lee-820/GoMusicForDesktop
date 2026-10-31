@@ -1,6 +1,4 @@
 import { computed, reactive, ref } from "vue"
-import { convertFileSrc } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
 import { api } from "./api"
 import type { DownloadRecord, DlStatus, Group, LrcLine, Page, Playlist, Song } from "./types"
 import { buildLyricRows, hasNonChinese, type LyricRow } from "./lyric"
@@ -64,12 +62,7 @@ export const st = reactive({
 
   // ---- 设置 ----
   fontKind: 0,
-  /** 思源宋体是否已加载进页面 */
-  fontLoaded: false,
-  /** 字体下载进度：-1 未在下载，0~100 为百分比 */
-  fontDl: -1,
-  /** 字体文件是否已下载到本地 */
-  fontReady: false,
+
   zhConvert: 0,
   themeColor: null as number | null,
   nmEnabled: true,
@@ -129,9 +122,6 @@ export async function load() {
   st.loading = false
   st.nmReady = await api.nmLoggedIn().catch(() => false)
   st.version = await api.appVersion().catch(() => "")
-  st.fontReady = await api.songFontReady().catch(() => false)
-  // 之前选过宋体且字体已在本地：直接装上，否则等用户点下载
-  if (st.fontKind === 1 && st.fontReady) await useSongFont()
 }
 
 export async function loadHome() {
@@ -493,52 +483,6 @@ export async function setSpeed(v: number) {
 export async function setFontKind(v: number) {
   st.fontKind = v
   await setPref("fontKind", String(v))
-  if (v === 1) {
-    if (st.fontReady) await useSongFont()
-    else await downloadSongFont()
-  }
-}
-
-// ============================ 思源宋体（按需下载） ============================
-//
-// 之前 @font-face 直接指向 CDN，那个地址拿不到字体，所以宋体一直是
-// 「选了但没生效」。改成客户端下载到本地，再用 FontFace 装载：
-// 不依赖外部 CDN，下载过就一直在。
-
-/** 把已下载的本地字体装进页面 */
-export async function useSongFont(): Promise<boolean> {
-  if (st.fontLoaded) return true
-  try {
-    const p = await api.songFontDownload() // 已下载时直接返回路径
-    const url = convertFileSrc(p)
-    const ff = new FontFace("GoSong", `url("${url}")`)
-    await ff.load()
-    document.fonts.add(ff)
-    st.fontLoaded = true
-    st.fontReady = true
-    return true
-  } catch {
-    return false
-  }
-}
-
-/** 下载字体；进度由 Rust 侧 font-progress 事件推送 */
-export async function downloadSongFont() {
-  if (st.fontDl >= 0) return
-  st.fontDl = 0
-  const un = await listen<number>("font-progress", (e) => {
-    st.fontDl = e.payload
-  })
-  try {
-    await api.songFontDownload()
-    if (await useSongFont()) toast("思源宋体已就绪")
-    else toast("字体加载失败")
-  } catch (e) {
-    toast("字体下载失败：" + String(e))
-  } finally {
-    un()
-    st.fontDl = -1
-  }
 }
 
 export async function setZhConvert(v: number) {

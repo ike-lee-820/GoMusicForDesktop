@@ -1,5 +1,11 @@
-/* 思源宋体不在这里声明：CDN 那个地址拿不到字体，改由客户端下载到本地后
-   用 FontFace 动态装载（见 store.ts 的 useSongFont） */
+/* 思源宋体：可变字重（wght 轴），字体文件打包进应用，离线可用。
+   放在 public/fonts/ 下，vite 原样复制到 dist，不需要联网下载 */
+@font-face {
+  font-family: "GoSong";
+  src: url("/fonts/song.otf") format("opentype");
+  font-display: swap;
+  font-weight: 100 900;
+}
 
 :root {
   --bg: #121014;
@@ -29,8 +35,6 @@ body {
 }
 
 body.font-song { font-family: "GoSong", "Songti SC", "SimSun", serif; }
-/* 字体没就绪时用系统宋体兜底，至少不会掉回无衬线 */
-body.font-song.fallback { font-family: "Songti SC", "SimSun", "Noto Serif CJK SC", serif; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--surface-hi); border-radius: 6px; }

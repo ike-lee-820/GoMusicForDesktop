@@ -79,9 +79,6 @@ export const api = {
   clearHistory: () => invoke<string[]>("clear_history"),
 
   appVersion: () => invoke<string>("app_version"),
-
-  songFontReady: () => invoke<boolean>("song_font_ready"),
-  songFontDownload: () => invoke<string>("song_font_download"),
   checkUpdate: () => invoke<UpdateInfo | null>("check_update"),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
 
