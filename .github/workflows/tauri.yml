@@ -23,6 +23,9 @@ jobs:
           - platform: windows-latest
             args: "--bundles nsis"
     runs-on: ${{ matrix.platform }}
+    env:
+      # 在仓库 Settings -> Variables 配 OPENROUTER_API_KEY；没配则翻译走思知兜底
+      OPENROUTER_API_KEY: ${{ vars.OPENROUTER_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
