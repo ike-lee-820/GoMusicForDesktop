@@ -8,6 +8,7 @@ import { computed, ref, watch } from "vue"
 import ArcLyrics from "./ArcLyrics.vue"
 import Icon from "./Icon.vue"
 import { api } from "../api"
+import type { Song } from "../types"
 import {
   fmt, isDownloaded, LOCAL_QUALITIES, lyricIndex, NM_QUALITIES, nextSong, prevSong,
   qualityLabel, seek, setQuality, setSpeed, st, startCurrent, toggle, toast,
@@ -24,9 +25,26 @@ const isNm = computed(() => !!cur.value && (cur.value.source === "netease" || cu
 // 网易云可选音质按歌缓存：同一首反复打开播放器不必每次都查
 const levelCache = new Map<string, string[]>()
 const levels = ref<string[]>([])
+
+// MV 是否真能播：mvId>0 只说明接口给了 id，下架/付费的 MV 拿不到地址。
+// 确认过才显示按钮；请求失败判断不了时按「有」处理，不因为一次抖动藏掉。
+const mvOk = ref<Record<string, boolean>>({})
+const mvProbing = new Set<string>()
+async function probeMv(s: Song) {
+  if (!s?.mvId || mvProbing.has(s.ssid) || s.ssid in mvOk.value) return
+  mvProbing.add(s.ssid)
+  try {
+    const u = await api.nmMvUrl(s.mvId)
+    mvOk.value = { ...mvOk.value, [s.ssid]: !!u }
+  } catch {
+    mvOk.value = { ...mvOk.value, [s.ssid]: true }
+  } finally { mvProbing.delete(s.ssid) }
+}
+
 watch(cur, async (s) => {
   levels.value = []
   if (!s) return
+  probeMv(s)
   if (!(s.source === "netease" || s.ssid.startsWith("nm"))) return
   const hit = levelCache.get(s.ssid)
   if (hit) { levels.value = hit; return }
@@ -81,8 +99,8 @@ const coverStyle = computed(() =>
       </button>
       <div class="ctrls">
         <div v-if="ctrlOpen" class="row">
-          <button v-if="cur.mvId" class="btn mv" title="播放 MV" @click="playMv">
-            <Icon name="music_video" :size="18" />MV
+          <button v-if="cur.mvId && mvOk[cur.ssid] === true" class="iconbtn" title="播放 MV" @click="playMv">
+            <Icon name="music_video" :size="20" />
           </button>
           <button class="iconbtn" :class="{ on: isDownloaded(cur.ssid) }"
                   :title="isDownloaded(cur.ssid) ? '已下载' : '下载'"
@@ -185,7 +203,6 @@ const coverStyle = computed(() =>
 .track > i { display: block; height: 100%; background: #fff; border-radius: 2px; }
 .play { background: var(--primary) !important; color: var(--on-primary) !important; }
 .btn.qbtn { height: 28px; padding: 0 10px; font-size: 12px; gap: 4px; }
-.btn.mv { height: 28px; padding: 0 9px; font-size: 12px; gap: 4px; background: var(--primary); color: var(--on-primary); }
 .pop {
   position: absolute; top: 40px; left: 0; z-index: 5; min-width: 130px;
   background: var(--surface); border-radius: 12px; padding: 6px;
