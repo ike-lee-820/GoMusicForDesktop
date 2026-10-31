@@ -298,6 +298,17 @@ pub fn nm_logged_in() -> bool { netease().logged_in() }
 #[tauri::command]
 pub fn nm_mv_url(mv_id: i64) -> Option<String> { netease().mv_url(mv_id) }
 
+/// 整篇歌词翻译。
+///
+/// 用 spawn_blocking 包一层：翻译是要发出几十个网络请求的阻塞活，
+/// 直接在同步命令里跑会冻住界面。返回与 texts 等长，翻不出来的是空串。
+#[tauri::command]
+pub async fn translate_lines(texts: Vec<String>) -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(move || crate::translate::translate_all(texts))
+        .await
+        .unwrap_or_default()
+}
+
 // ---------------- 歌单 ----------------
 
 #[tauri::command]

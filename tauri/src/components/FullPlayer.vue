@@ -10,8 +10,9 @@ import Icon from "./Icon.vue"
 import { api } from "../api"
 import type { Song } from "../types"
 import {
-  fmt, isDownloaded, LOCAL_QUALITIES, lyricIndex, NM_QUALITIES, nextSong, prevSong,
-  qualityLabel, seek, setQuality, setSpeed, st, startCurrent, toggle, toast,
+  fmt, isDownloaded, LOCAL_QUALITIES, lyricHasTrans, lyricNeedTrans, lyricRowIndex,
+  lyricRows, NM_QUALITIES, nextSong, prevSong, qualityLabel, seek, setQuality,
+  setSpeed, st, startCurrent, toggle, toast, translateLyric,
 } from "../store"
 
 const ctrlOpen = ref(true)
@@ -102,6 +103,13 @@ const coverStyle = computed(() =>
           <button v-if="cur.mvId && mvOk[cur.ssid] === true" class="iconbtn" title="播放 MV" @click="playMv">
             <Icon name="music_video" :size="20" />
           </button>
+          <!-- 翻译：歌词里有非中文才出现 -->
+          <button v-if="lyricNeedTrans" class="iconbtn" :class="{ on: lyricHasTrans && st.showTrans }"
+                  :title="st.transLoading ? '正在翻译…' : (lyricHasTrans ? '译文显示中，点击隐藏' : '翻译歌词')"
+                  @click="translateLyric()">
+            <Icon v-if="!st.transLoading" name="translate" :size="20" />
+            <span v-else class="mini-spin" />
+          </button>
           <button class="iconbtn" :class="{ on: isDownloaded(cur.ssid) }"
                   :title="isDownloaded(cur.ssid) ? '已下载' : '下载'"
                   @click="st.showFull = false">
@@ -164,7 +172,8 @@ const coverStyle = computed(() =>
       </div>
       <div class="right">
         <ArcLyrics
-          :lines="st.lyrics" :idx="lyricIndex" :loading="st.lyricLoading"
+          :rows="lyricRows" :idx="lyricRowIndex" :loading="st.lyricLoading"
+          :show-trans="st.showTrans"
           color="var(--primary)" :row-spacing="63" :radius-boost="0.7"
           :min-span="3" :cur-sp="22" :other-sp="17"
           @seek="(ms) => seek(ms)"
@@ -203,6 +212,12 @@ const coverStyle = computed(() =>
 .track > i { display: block; height: 100%; background: #fff; border-radius: 2px; }
 .play { background: var(--primary) !important; color: var(--on-primary) !important; }
 .btn.qbtn { height: 28px; padding: 0 10px; font-size: 12px; gap: 4px; }
+.mini-spin {
+  width: 14px; height: 14px; border-radius: 50%; display: inline-block;
+  border: 2px solid rgba(255, 255, 255, .25); border-top-color: #fff;
+  animation: spin .9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .pop {
   position: absolute; top: 40px; left: 0; z-index: 5; min-width: 130px;
   background: var(--surface); border-radius: 12px; padding: 6px;

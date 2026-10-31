@@ -5,6 +5,7 @@ pub mod netease;
 pub mod player;
 pub mod prefs;
 pub mod store;
+pub mod translate;
 
 use tauri::Manager;
 
@@ -51,6 +52,7 @@ pub fn run() {
             commands::nm_account_name,
             commands::nm_logged_in,
             commands::nm_mv_url,
+            commands::translate_lines,
             commands::create_playlist,
             commands::rename_playlist,
             commands::delete_playlist,

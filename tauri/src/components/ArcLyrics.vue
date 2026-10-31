@@ -3,16 +3,19 @@
  * 圆弧歌词：每行落在一个真正的圆上，位置与倾斜角由同一个圆心角算出。
  * 外框与文字共用同一个 rotate，所以两者始终平行、不会被斜切；
  * 宽高都不设上限，长句折行也完整显示，不会被裁掉。
+ *
+ * 一行是「原句 +（可选）译文」两块，整块一起转，所以译文同样贴合圆弧。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
-import type { LrcLine } from "../types"
+import type { LyricRow } from "../lyric"
 import { zhText } from "../zh"
 import { st } from "../store"
 
 const props = withDefaults(defineProps<{
-  lines: LrcLine[]
+  rows: LyricRow[]
   idx: number
   loading?: boolean
+  showTrans?: boolean
   color?: string
   rowSpacing?: number
   radiusBoost?: number
@@ -20,7 +23,7 @@ const props = withDefaults(defineProps<{
   curSp?: number
   otherSp?: number
 }>(), {
-  loading: false, color: "#d0bcff", rowSpacing: 63, radiusBoost: 0.7,
+  loading: false, showTrans: true, color: "#d0bcff", rowSpacing: 63, radiusBoost: 0.7,
   minSpan: 2, curSp: 21, otherSp: 16,
 })
 const emit = defineEmits<{ (e: "seek", ms: number): void }>()
@@ -28,6 +31,8 @@ const emit = defineEmits<{ (e: "seek", ms: number): void }>()
 const PI_F = Math.PI
 const MAX_TILT_DEG = 20
 const DRAG_SENSITIVITY = 2.5
+/** 显示译文时一行变高，行距要跟着放大，否则相邻两行会叠在一起 */
+const ROW_SPACING_TRANS_MUL = 1.6
 
 const box = ref<HTMLElement | null>(null)
 const height = ref(400)
@@ -75,16 +80,26 @@ function onMove(e: PointerEvent) {
   if (!dragging) return
   const dy = e.clientY - lastY
   lastY = e.clientY
-  if (Math.abs(dy) > 0.5) { dragOff.value -= dy / (props.rowSpacing / DRAG_SENSITIVITY); noteManual() }
+  if (Math.abs(dy) > 0.5) { dragOff.value -= dy / (spacing.value / DRAG_SENSITIVITY); noteManual() }
 }
 function onUp() { dragging = false }
 
+/** 这篇歌词当前有没有译文要显示 */
+const hasTrans = computed(
+  () => props.showTrans && props.rows.some((r) => !!r.trans),
+)
+/** 有译文时行距放大 */
+const spacing = computed(
+  () => props.rowSpacing * (hasTrans.value ? ROW_SPACING_TRANS_MUL : 1),
+)
+
 const geom = computed(() => {
-  const rows = Math.min(15, Math.max(3, Math.floor(height.value / props.rowSpacing)))
-  const span = Math.max(Math.floor(rows / 2), props.minSpan)
+  const rs = spacing.value
+  const visibleRows = Math.min(15, Math.max(3, Math.floor(height.value / rs)))
+  const span = Math.max(Math.floor(visibleRows / 2), props.minSpan)
   const tilt = (MAX_TILT_DEG * PI_F) / 180
-  const r = Math.max((span * props.rowSpacing) / tilt * props.radiusBoost, height.value * 0.5)
-  const step = props.rowSpacing / r
+  const r = Math.max((span * rs) / tilt * props.radiusBoost, height.value * 0.5)
+  const step = rs / r
   return { span, r, step, shift: (r * (1 - Math.cos(span * step))) / 2 }
 })
 
@@ -92,7 +107,10 @@ const geom = computed(() => {
 // 不能让每帧都对十几行歌词跑一遍转换。只在歌词或简繁设置变化时重算。
 const converted = computed(() => {
   const mode = st.zhConvert
-  return props.lines.map((l) => zhText(l.text, mode))
+  return props.rows.map((r) => ({
+    text: zhText(r.text, mode),
+    trans: r.trans ? zhText(r.trans, mode) : "",
+  }))
 })
 
 const visible = computed(() => {
@@ -100,15 +118,17 @@ const visible = computed(() => {
   const c = cur.value + dragOff.value
   const edge = g.span + 1
   const from = Math.max(0, Math.floor(c - edge))
-  const to = Math.min(props.lines.length - 1, Math.ceil(c + edge))
+  const to = Math.min(props.rows.length - 1, Math.ceil(c + edge))
   const out: {
-    i: number; x: number; y: number; deg: number; alpha: number; isCur: boolean; text: string
+    i: number; x: number; y: number; deg: number; alpha: number; isCur: boolean
+    text: string; trans: string
   }[] = []
   for (let i = from; i <= to; i++) {
     const d = i - c
     const th = d * g.step
     const t = Math.min(1, Math.abs(d) / g.span)
     const fade = 1 - t * t * (3 - 2 * t) // smoothstep：边缘值与斜率都为 0
+    const cv = converted.value[i]
     out.push({
       i,
       x: -g.r * (1 - Math.cos(th)) + g.shift,
@@ -116,13 +136,14 @@ const visible = computed(() => {
       deg: (th * 180) / PI_F,
       alpha: fade,
       isCur: i === props.idx,
-      text: converted.value[i] ?? props.lines[i].text,
+      text: cv?.text ?? props.rows[i].text,
+      trans: props.showTrans ? (cv?.trans ?? props.rows[i].trans ?? "") : "",
     })
   }
   return out
 })
 
-function onLineClick(l: LrcLine) {
+function onLineClick(l: LyricRow) {
   if (l.timeMs < 0) return
   dragOff.value = 0
   clearTimeout(manualTimer)
@@ -133,7 +154,7 @@ function onLineClick(l: LrcLine) {
 <template>
   <div ref="box" class="arc" @pointerdown="onDown" @pointermove="onMove"
        @pointerup="onUp" @pointerleave="onUp" @pointercancel="onUp">
-    <template v-if="lines.length">
+    <template v-if="rows.length">
       <div
         v-for="l in visible" :key="l.i"
         class="line" :class="{ cur: l.isCur }"
@@ -145,8 +166,13 @@ function onLineClick(l: LrcLine) {
           fontWeight: l.isCur ? 700 : 500,
           maxWidth: Math.max(160, width - 24) + 'px',
         }"
-        @click="onLineClick(lines[l.i])"
-      >{{ l.text }}</div>
+        @click="onLineClick(rows[l.i])"
+      >
+        <div>{{ l.text }}</div>
+        <!-- 译文：永远不跟着高亮（高亮只属于原句），字号更小、更暗。
+             点它和点原句一样跳到这一行的时间，也就是「跳到对应原句处」。 -->
+        <div v-if="l.trans" class="trans">{{ l.trans }}</div>
+      </div>
     </template>
     <div v-else class="empty">
       <template v-if="loading">
@@ -170,6 +196,11 @@ function onLineClick(l: LrcLine) {
   /* 不做 overflow 裁剪：长句折行完整显示 */
 }
 .line:hover { text-decoration: underline dotted rgba(255, 255, 255, .3); }
+.trans {
+  font-size: .92em; font-weight: 400; line-height: 1.45;
+  color: rgba(255, 255, 255, .48); margin-top: 1px;
+}
+.line.cur .trans { color: rgba(255, 255, 255, .66); }
 .empty {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   color: rgba(255, 255, 255, .55); font-size: 14px; display: flex;

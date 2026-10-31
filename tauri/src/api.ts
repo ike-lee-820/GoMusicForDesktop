@@ -55,6 +55,8 @@ export const api = {
   nmLoggedIn: () => invoke<boolean>("nm_logged_in"),
   nmMvUrl: (mvId: number) => invoke<string | null>("nm_mv_url", { mvId }),
 
+  translateLines: (texts: string[]) => invoke<string[]>("translate_lines", { texts }),
+
   createPlaylist: (name: string, songs: string[], cover?: string | null) =>
     invoke<Playlist[]>("create_playlist", { name, songs, cover }),
   renamePlaylist: (id: string, name: string) => invoke<Playlist[]>("rename_playlist", { id, name }),

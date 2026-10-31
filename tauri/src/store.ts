@@ -1,6 +1,7 @@
 import { computed, reactive, ref } from "vue"
 import { api } from "./api"
 import type { DownloadRecord, DlStatus, Group, LrcLine, Page, Playlist, Song } from "./types"
+import { buildLyricRows, hasNonChinese, type LyricRow } from "./lyric"
 import { zhText } from "./zh"
 
 /** 播放模式 */
@@ -53,6 +54,10 @@ export const st = reactive({
   playMode: 0,
   speed: 1,
   lyrics: [] as LrcLine[],
+  // 是否显示译文：已经有译文后再点翻译按钮就是切换显示
+  showTrans: true,
+  // 正在整篇翻译
+  transLoading: false,
   lyricLoading: false,
 
   // ---- 设置 ----
@@ -376,6 +381,84 @@ export const lyricIndex = computed(() => {
   }
   return ans
 })
+
+// ============================ 歌词翻译 ============================
+
+const TRANS_KEY = "lyric_trans"
+/** 译文缓存上限：整篇译文不小，无限堆积会把 localStorage 撑大 */
+const MAX_TRANS = 300
+
+/** ssid -> 按逻辑行对齐的译文 */
+const transCache = ref<Record<string, string[]>>(loadTrans())
+
+function loadTrans(): Record<string, string[]> {
+  try {
+    return JSON.parse(localStorage.getItem(TRANS_KEY) || "{}") || {}
+  } catch {
+    return {}
+  }
+}
+
+function saveTrans() {
+  try {
+    const keys = Object.keys(transCache.value)
+    const cut = keys.length > MAX_TRANS ? keys.slice(keys.length - MAX_TRANS) : keys
+    const keep: Record<string, string[]> = {}
+    for (const k of cut) keep[k] = transCache.value[k]
+    localStorage.setItem(TRANS_KEY, JSON.stringify(keep))
+  } catch {
+    /* 存不下就算了，不影响播放 */
+  }
+}
+
+/** 当前歌词整理后的逻辑行（自带翻译的歌词会把原文与译文并成一行） */
+export const lyricRows = computed<LyricRow[]>(() => {
+  if (!st.lyrics.length) return []
+  return buildLyricRows(st.lyrics, st.cur ? transCache.value[st.cur.ssid] : undefined)
+})
+
+/** 当前句落在哪个逻辑行：播放位置是按原始行算的，这里换算一次 */
+export const lyricRowIndex = computed(() => {
+  const i = lyricIndex.value
+  if (i < 0) return -1
+  return lyricRows.value.findIndex((r) => r.index === i)
+})
+
+/** 歌词里有非中文才给翻译按钮（中文歌不需要） */
+export const lyricNeedTrans = computed(() => lyricRows.value.some((r) => hasNonChinese(r.text)))
+
+/** 是否已经译过：自带译文，或已经翻过并写进了缓存 */
+export const lyricHasTrans = computed(() => lyricRows.value.some((r) => !!r.trans))
+
+/**
+ * 翻译当前歌词。
+ *
+ * 点一次就并发翻完整篇并缓存（接口没有频率限制，不用一句一句等）。
+ * 已经有译文时不发请求，改成切换译文的显示 —— 按钮这时不该重复翻译。
+ */
+export async function translateLyric() {
+  const rows = lyricRows.value
+  const id = st.cur?.ssid
+  if (!id || !rows.length) { toast("暂无歌词"); return }
+  if (rows.some((r) => r.trans)) { st.showTrans = !st.showTrans; return }
+  if (st.transLoading) return
+  st.transLoading = true
+  try {
+    const res = await api.translateLines(rows.map((r) => r.text))
+    if (res.every((s) => !s.trim())) { toast("翻译失败，请检查网络"); return }
+    transCache.value = { ...transCache.value, [id]: res }
+    saveTrans()
+    // 翻的过程中可能已经切歌了：缓存照存，但不改动当前显示
+    if (st.cur?.ssid === id) {
+      st.showTrans = true
+      toast(`已翻译 ${res.filter((s) => s.trim()).length}/${res.length} 句`)
+    }
+  } catch (e: any) {
+    toast(String(e?.message ?? e))
+  } finally {
+    st.transLoading = false
+  }
+}
 
 // ============================ 设置 ============================
 
