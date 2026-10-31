@@ -62,6 +62,7 @@ export const st = reactive({
 
   // ---- 设置 ----
   fontKind: 0,
+
   zhConvert: 0,
   themeColor: null as number | null,
   nmEnabled: true,

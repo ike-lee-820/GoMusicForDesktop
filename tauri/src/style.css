@@ -1,13 +1,10 @@
-/* 思源宋体：与网页端同源，按需下载分成多片 */
+/* 思源宋体：可变字重（wght 轴），字体文件打包进应用，离线可用。
+   放在 public/fonts/ 下，vite 原样复制到 dist，不需要联网下载 */
 @font-face {
   font-family: "GoSong";
-  src: url("https://cloud.myocd.de5.net/direct/50j5q6a4vw6p6v72712o514g5h2o5rmvm1psbdmvm1psbd/song.woff2") format("woff2");
+  src: url("/fonts/song.otf") format("opentype");
   font-display: swap;
-}
-@font-face {
-  font-family: "GoHei";
-  src: url("https://cloud.myocd.de5.net/direct/4u5a616e491m3i6t3p6p1d2j25633f31mvm1psbfmvm1psbf/hei.woff2") format("woff2");
-  font-display: swap;
+  font-weight: 100 900;
 }
 
 :root {

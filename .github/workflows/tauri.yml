@@ -3,16 +3,10 @@ name: Tauri 桌面版
 on:
   push:
     branches: [main]
-    # 源码在仓库根目录（不是 tauri/ 子目录）。之前这里写的是 "tauri/**"，
-    # 而提交改的是根级文件，于是推送既不触发、构建也用不上新代码
+    # 源码在 tauri/ 子目录（仓库根级的 src-tauri/ 是不完整的副本，
+    # 缺 icons/、main.rs、api.rs 等，不能用来构建）
     paths:
-      - "src/**"
-      - "src-tauri/**"
-      - "public/**"
-      - "package.json"
-      - "index.html"
-      - "vite.config.ts"
-      - "tsconfig.json"
+      - "tauri/**"
       - ".github/workflows/tauri.yml"
   workflow_dispatch:
 
@@ -51,15 +45,18 @@ jobs:
           node-version: 20
 
       - name: 安装前端依赖
+        working-directory: ./tauri
         run: npm install
 
       - name: 编译检查（输出日志）
         continue-on-error: true
         shell: bash
         run: |
-          npm run build > build.log 2>&1
-          echo "npm build exit=$?" >> build.log
-          cargo check --manifest-path src-tauri/Cargo.toml >> build.log 2>&1
+          cd tauri
+          npm run build > ../build.log 2>&1
+          echo "npm build exit=$?" >> ../build.log
+          cd ..
+          cargo check --manifest-path tauri/src-tauri/Cargo.toml >> build.log 2>&1
           echo "cargo check exit=$?" >> build.log
           tail -500 build.log > build_tail.log || true
 
@@ -82,7 +79,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: .
+          projectPath: ./tauri
           tagName: v__VERSION__
           releaseName: "GoMusic 桌面版 v__VERSION__"
           releaseBody: "Tauri 版桌面客户端（Vue 3 + Rust）。自动构建发布。"

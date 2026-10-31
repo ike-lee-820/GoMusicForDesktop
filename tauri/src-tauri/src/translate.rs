@@ -1,4 +1,4 @@
-//! 歌词翻译：只走思知 AI 对话接口，并且**整篇一次提交**。
+//! 歌词翻译：整篇一次提交，主用 OpenRouter（NVIDIA Nemotron 3 Ultra），失败退回思知 AI。
 //!
 //! 之前是「主翻译接口逐句并发，AI 只做兜底」。主接口返回的是机器译文、
 //! 目标语言偶尔还会弄错（翻出来是英文），而 AI 的译文更贴合歌词语境，
@@ -20,6 +20,14 @@ use serde_json::Value;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+/// 主用：OpenRouter（NVIDIA Nemotron 3 Ultra，免费）
+const OR_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+/// 密钥不写进源码：GitHub 的 secret scanning 会拦下带密钥的提交。
+/// 改由编译期环境变量 OPENROUTER_API_KEY 注入；没配就退回思知。
+const OR_KEY: Option<&str> = option_env!("OPENROUTER_API_KEY");
+const OR_MODEL: &str = "nvidia/nemotron-3-ultra-550b-a55b:free";
+
+/// 备用：思知 AI 对话
 const AI_URL: &str = "https://api.sizhi.com/chat";
 const AI_APPID: &str = "b179db75c4804ae5954d2e7ad794e5bd";
 
@@ -155,7 +163,47 @@ fn parse_numbered(raw: &str, want: &[usize]) -> std::collections::HashMap<usize,
 
 /// POST 优先：整篇歌词很长，拼进 URL 会超过服务端对 GET 长度的限制。
 /// 少数部署只读 query，所以 POST 没拿到时再退回 GET。
+/// 主用 OpenRouter；它报错 / 拿不到就退回思知。
+/// 两者返回的都是整篇译文文本，后面的解析逻辑共用。
 fn ask(spoken: &str) -> Option<String> {
+    openrouter(spoken).or_else(|| sizhi(spoken))
+}
+
+/// 主用：OpenRouter，OpenAI 兼容的 chat/completions。
+/// 不传 reasoning，响应里就只有译文，不带思考过程。
+fn openrouter(spoken: &str) -> Option<String> {
+    let key = OR_KEY?.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let body = serde_json::json!({
+        "model": OR_MODEL,
+        "messages": [{"role": "user", "content": spoken}],
+    });
+    let j: Value = client()
+        .post(OR_URL)
+        .header("Authorization", format!("Bearer {}", key.unwrap_or_default()))
+        .json(&body)
+        .send()
+        .ok()?
+        .json()
+        .ok()?;
+    let s = j
+        .get("choices")?
+        .get(0)?
+        .get("message")?
+        .get("content")?
+        .as_str()?
+        .trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// 备用：思知。POST 优先（整篇很长，GET 会被服务端截断），拿不到再退回 GET
+fn sizhi(spoken: &str) -> Option<String> {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
