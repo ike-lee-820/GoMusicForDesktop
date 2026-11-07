@@ -30,7 +30,7 @@ jobs:
             name: windows-x64
             tasks: packageReleaseExe packageReleaseMsi
             formats: exe msi
-          - os: macos-14
+          - os: macos-latest
             name: macos-arm64
             tasks: packageReleaseDmg
             formats: dmg
@@ -140,7 +140,12 @@ jobs:
           mkdir -p ci
           cp compile.log "ci/${{ matrix.name }}-compile.log" || true
           cp package.log "ci/${{ matrix.name }}-package.log" || true
-          git add -f ci/*.log || true
+          # jpackage 真正的错误在 err 日志里，Gradle 只报 exit code
+          for F in build/compose/logs/*/*-err.txt build/compose/logs/*/*-out.txt; do
+            [ -e "$F" ] || continue
+            cp "$F" "ci/${{ matrix.name }}-$(basename "$F")" || true
+          done
+          git add -f ci/*.log ci/*.txt || true
           git commit -m "ci: desktop logs ${{ github.run_id }}" || echo "no change"
           git push -f origin "$BR" || true
 
