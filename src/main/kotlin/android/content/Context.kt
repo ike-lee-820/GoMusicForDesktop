@@ -147,7 +147,6 @@ object AppContext : Context() {
 open class ContextWrapper(base: Context?) : Context() {
     protected var mBase: Context? = base
     val baseContext: Context get() = mBase ?: AppContext
-    fun getBaseContext(): Context? = mBase
 }
 
 class ComponentName(val pkg: String, val cls: String) {
@@ -221,7 +220,7 @@ fun Context.findActivity(): android.app.Activity? {
     var c: Context? = this
     while (c is ContextWrapper) {
         if (c is android.app.Activity) return c
-        c = c.getBaseContext()
+        c = c.baseContext
     }
     return c as? android.app.Activity
 }
