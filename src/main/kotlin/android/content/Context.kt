@@ -2,7 +2,6 @@ package android.content
 
 import android.app.Application
 import android.content.pm.PackageManager
-import android.content.res.Resources
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
@@ -67,6 +66,7 @@ class ContentResolver {
         return Uri.parse("content://gomusic/" + f.absolutePath.removePrefix(AppDirs.downloadRoot.absolutePath).trimStart('/'))
     }
     fun openOutputStream(uri: Uri?): java.io.OutputStream? = uri?.let { fileOf(it)?.outputStream() }
+    fun openOutputStream(uri: Uri?, mode: String?): java.io.OutputStream? = openOutputStream(uri)
     fun openInputStream(uri: Uri?): java.io.InputStream? = uri?.let { fileOf(it)?.takeIf { f -> f.exists() }?.inputStream() }
     fun update(uri: Uri?, values: ContentValues, where: String?, args: Array<String>?): Int = 0
     fun delete(uri: Uri?, where: String?, args: Array<String>?): Int {
@@ -100,8 +100,24 @@ open class Context {
         else -> null
     }
     open fun startActivity(intent: Intent, options: Bundle? = null) {
-        val u = intent.data?.toString()
-        if (!u.isNullOrBlank()) runCatching { Desktop.getDesktop().browse(URI(u)) }
+        if (intent.action == Intent.ACTION_SEND) {
+            val txt = intent.extras.map[Intent.EXTRA_TEXT]?.toString()
+            if (!txt.isNullOrBlank()) runCatching {
+                java.awt.Toolkit.getDefaultToolkit().systemClipboard
+                    .setContents(java.awt.datatransfer.StringSelection(txt), null)
+            }
+            return
+        }
+        val u = intent.data?.toString() ?: return
+        runCatching {
+            val f = when {
+                u.startsWith("content://gomusic/") -> java.io.File(android.content.AppDirs.downloadRoot, u.removePrefix("content://gomusic/"))
+                u.startsWith("file:") -> java.io.File(java.net.URI(u))
+                else -> null
+            }
+            if (f != null) java.awt.Desktop.getDesktop().open(f)
+            else java.awt.Desktop.getDesktop().browse(java.net.URI(u))
+        }.getOrElse { runCatching { java.awt.Desktop.getDesktop().browse(java.net.URI(u)) } }
     }
     open fun startService(intent: Intent): ComponentName? {
         // 桌面没有 Service：把「应用播放焦点策略」直接转给播放器
@@ -158,12 +174,18 @@ class Intent {
     fun setData(u: Uri?): Intent { data = u; return this }
     fun addFlags(f: Int): Intent { flags = flags or f; return this }
     fun setFlags(f: Int): Intent { flags = f; return this }
+    var type: String? = null
+    fun setType(t: String?): Intent { type = t; return this }
+    fun setDataAndType(u: Uri?, t: String?): Intent { data = u; type = t; return this }
     fun putExtra(k: String, v: Any?): Intent { extras.map[k] = v; return this }
     fun getStringExtra(k: String): String? = extras.getString(k)
     fun setPackage(p: String?): Intent { return this }
     companion object {
         const val ACTION_VIEW = "android.intent.action.VIEW"
         const val ACTION_MAIN = "android.intent.action.MAIN"
+        const val ACTION_SEND = "android.intent.action.SEND"
+        const val EXTRA_TEXT = "android.intent.extra.TEXT"
+        fun createChooser(target: Intent, title: CharSequence?): Intent = target
         const val FLAG_ACTIVITY_NEW_TASK = 0x10000000
         const val FLAG_GRANT_READ_URI_PERMISSION = 0x00000001
     }
@@ -187,6 +209,7 @@ class ContentValues {
     fun getAsString(k: String): String? = m[k]?.toString()
     fun getAsInteger(k: String): Int? = (m[k] as? Number)?.toInt()
     fun get(k: String): Any? = m[k]
+    fun clear() { m.clear() }
 }
 
 abstract class BroadcastReceiver {

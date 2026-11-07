@@ -5,7 +5,7 @@ import kotlin.reflect.KClass
 @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY,
     AnnotationTarget.VALUE_PARAMETER, AnnotationTarget.TYPE, AnnotationTarget.EXPRESSION,
     AnnotationTarget.FILE, AnnotationTarget.TYPEALIAS)
-@Retention(AnnotationRetention.BINARY)
+@Retention(AnnotationRetention.SOURCE)
 annotation class OptIn(vararg val markerClass: KClass<*>)
 
 @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY)

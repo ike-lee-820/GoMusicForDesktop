@@ -6,6 +6,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import de.myocd.gomusic.DesktopPlayer
+import de.myocd.gomusic.DesktopVideo
 
 /** ExoPlayer 平替：MV 视频页用（音频走 FFmpeg，画面渲染到 SwingPanel） */
 class ExoPlayer private constructor(private val ctx: Context) {
@@ -21,6 +22,7 @@ class ExoPlayer private constructor(private val ctx: Context) {
     fun stop() { DesktopVideo.stop() }
     fun release() { DesktopVideo.stop() }
     fun setPlaybackSpeed(v: Float) { DesktopVideo.setRate(v) }
+    fun seekTo(ms: Long) { DesktopVideo.seek(ms) }
     fun setVideoSurfaceView(sv: SurfaceView?) { DesktopVideo.surface = sv }
     fun addListener(l: Player.Listener) { listeners.add(l); notifyVideoSize() }
     fun removeListener(l: Player.Listener) { listeners.remove(l) }

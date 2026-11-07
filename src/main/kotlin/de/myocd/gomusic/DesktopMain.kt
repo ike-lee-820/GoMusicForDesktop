@@ -24,7 +24,6 @@ import androidx.compose.ui.platform.DesktopConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
-import androidx.compose.ui.window.exitApplication
 import androidx.compose.ui.window.rememberWindowState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -66,7 +65,7 @@ fun main() = application {
         if (!vm.updateChecking) vm.maybeShowUpdateDialog()
     }
     Window(
-        onCloseRequest = ::exitApplication,
+        onCloseRequest = { kotlin.system.exitProcess(0) },
         state = state,
         title = "GoMusic",
         onKeyEvent = { ev ->

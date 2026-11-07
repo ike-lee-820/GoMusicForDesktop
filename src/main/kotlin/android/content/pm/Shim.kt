@@ -14,6 +14,7 @@ class ActivityInfo {
 }
 
 class PackageManager {
+    companion object { const val PERMISSION_GRANTED = 0; const val PERMISSION_DENIED = -1 }
     val packageInstaller: PackageInstaller get() = PackageInstaller()
     fun canRequestPackageInstalls(): Boolean = true
     fun getPackageInfo(p: String, f: Int): Any? = null

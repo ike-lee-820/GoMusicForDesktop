@@ -7,7 +7,7 @@ object Base64 {
     const val NO_WRAP = 2
     fun decode(s: String, flags: Int): ByteArray = runCatching {
         JBase64.getMimeDecoder().decode(s)
-    }.getOrDefault(JBase64.getDecoder().decode(s.replace("\s".toRegex(), "")))
+    }.getOrDefault(JBase64.getDecoder().decode(s.replace("\\s".toRegex(), "")))
     fun encodeToString(b: ByteArray, flags: Int): String =
         if (flags and NO_WRAP != 0) JBase64.getEncoder().encodeToString(b)
         else JBase64.getMimeEncoder().encodeToString(b)

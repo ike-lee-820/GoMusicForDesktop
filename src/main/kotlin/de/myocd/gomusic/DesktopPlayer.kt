@@ -139,5 +139,6 @@ object DesktopVideo {
     fun position(): Long = pos
     fun duration(): Long = dur
     fun setRate(v: Float) { audio.setRate(v) }
+    fun seek(ms: Long) { pos = ms; audio.seek(ms) }
     fun videoSize(): Pair<Int, Int> = 1280 to 720
 }
