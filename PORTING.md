@@ -132,3 +132,15 @@ gradle compileKotlin --no-daemon
 | Linux x64 | `packageReleaseDeb` | `GoMusic-26.11.9-linux-x64.deb` |
 
 打包依赖：Windows exe/msi 需要 WiX v3，Linux deb 需要 `fakeroot`，CI 已显式准备。
+
+### 这次还修掉的两个真实失败
+
+1. **Windows jpackage 报 `Input length = 1`**（`MalformedInputException`）：
+   `nativeDistributions.description` 原先写的是中文，jpackage 在 Windows 上用平台
+   默认编码读 args 文件，UTF-8 中文字节解析失败，`exe` / `msi` 全部 exit 1。
+   现在交给 jpackage 的所有元数据（description / vendor / copyright / menuGroup）
+   一律 ASCII，中文说明只放在 README 里。
+2. **`macos-14` runner 被取消**：改回 `macos-latest`（arm64）后 arm 包正常产出。
+
+修复后四个 runner 全部 `success`，Release 直接挂 5 个单文件安装包：
+`windows-x64.exe` / `.msi`、`macos-arm64.dmg`、`macos-x64.dmg`、`linux-x64.deb`。
