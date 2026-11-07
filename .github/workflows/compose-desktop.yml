@@ -24,12 +24,6 @@ jobs:
         include:
           - os: ubuntu-22.04
             name: linux-x64
-          - os: windows-latest
-            name: windows-x64
-          - os: macos-14
-            name: macos-arm64
-          - os: macos-15-intel
-            name: macos-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +42,23 @@ jobs:
           gradle compileKotlin --no-daemon --stacktrace 2>&1 | tee build.log
           exit ${PIPESTATUS[0]}
 
+      - name: 上传编译日志
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          git config user.name ci
+          git config user.email ci@example.com
+          BR="ci-log-desktop-${{ matrix.name }}-${{ github.run_id }}"
+          git checkout -B "$BR"
+          mkdir -p ci
+          cp build.log "ci/${{ matrix.name }}.log" || true
+          git add -f "ci/${{ matrix.name }}.log" || true
+          git commit -m "ci: desktop build log ${{ github.run_id }}" || echo "no change"
+          git push -f origin "$BR" || true
+
       - name: 打包可执行分发目录
+        if: success()
         shell: bash
         run: gradle createReleaseDistributable --no-daemon
 
