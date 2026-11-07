@@ -21,6 +21,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.DesktopConfiguration
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
@@ -30,28 +31,39 @@ import kotlinx.coroutines.withContext
 
 private class DesktopApp : Application()
 
+/** 桌面只保留横屏：窗口最小宽度/高度，低于下限自动拉回，永远不会进竖屏分支 */
+private const val MIN_WIDTH_DP = 960
+private const val MIN_HEIGHT_DP = 600
+private val DEFAULT_SIZE = DpSize(1280.dp, 800.dp)
+
 /**
  * 桌面入口。
  *
- * 窗口默认按手机竖屏尺寸（420x860）打开，界面与手机端逐像素一致；
- * 把窗口拉宽后 LocalConfiguration.orientation 变成 LANDSCAPE，
- * 自动切换成手机横屏那套「左侧导航栏 + 右侧竖排播放栏」布局。
+ * 竖屏界面已移除：LocalConfiguration.orientation 恒为 LANDSCAPE，
+ * 手机端源码里的竖屏分支不会被渲染。窗口默认 1280×800（横屏），
+ * 拉宽/拉高都仍是横屏那套「左侧导航栏 + 右侧竖排播放栏」布局。
  */
 fun main() = application {
     val app = remember { DesktopApp() }
     val vm = remember { MainViewModel(app) }
-    val state = rememberWindowState(width = 420.dp, height = 860.dp)
+    val state = rememberWindowState(width = DEFAULT_SIZE.width, height = DEFAULT_SIZE.height)
     var cfg by remember {
-        mutableStateOf(DesktopConfiguration(420, 860, android.content.res.Configuration.ORIENTATION_PORTRAIT))
+        mutableStateOf(
+            DesktopConfiguration(1280, 800, android.content.res.Configuration.ORIENTATION_LANDSCAPE)
+        )
     }
     LaunchedEffect(state.size) {
         val w = state.size.width.value.toInt()
         val h = state.size.height.value.toInt()
-        cfg = DesktopConfiguration(
-            w, h,
-            if (w > h) android.content.res.Configuration.ORIENTATION_LANDSCAPE
-            else android.content.res.Configuration.ORIENTATION_PORTRAIT,
-        )
+        // 不允许缩成竖屏 / 过小，保证横屏布局始终成立
+        if (w < MIN_WIDTH_DP || h < MIN_HEIGHT_DP) {
+            state.size = DpSize(
+                maxOf(w, MIN_WIDTH_DP).dp,
+                maxOf(h, MIN_HEIGHT_DP).dp,
+            )
+            return@LaunchedEffect
+        }
+        cfg = DesktopConfiguration(w, h, android.content.res.Configuration.ORIENTATION_LANDSCAPE)
     }
     LaunchedEffect(Unit) {
         ImageCache.init(app)

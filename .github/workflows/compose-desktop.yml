@@ -1,4 +1,4 @@
-name: GoMusic 桌面版（Compose，与手机端一致）
+name: GoMusic 桌面版（原生安装包 exe / msi / dmg / deb）
 
 on:
   push:
@@ -24,12 +24,20 @@ jobs:
         include:
           - os: ubuntu-22.04
             name: linux-x64
+            tasks: packageReleaseDeb
+            formats: deb
           - os: windows-latest
             name: windows-x64
+            tasks: packageReleaseExe packageReleaseMsi
+            formats: exe msi
           - os: macos-14
             name: macos-arm64
+            tasks: packageReleaseDmg
+            formats: dmg
           - os: macos-15-intel
             name: macos-x64
+            tasks: packageReleaseDmg
+            formats: dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -41,56 +49,125 @@ jobs:
         with:
           gradle-version: 8.10.2
 
+      # jpackage 的平台依赖：Linux deb 要 fakeroot，Windows exe/msi 要 WiX 3。
+      # 以前这里没有准备，Windows / macOS 的打包步骤会半路失败。
+      - name: 准备 jpackage 依赖
+        shell: bash
+        run: |
+          set -u
+          case "${{ runner.os }}" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y fakeroot
+              ;;
+            Windows)
+              if ! command -v candle.exe >/dev/null 2>&1; then
+                echo "WiX v3 未找到，尝试用 chocolatey 安装"
+                choco install wixtoolset -y --no-progress || echo "choco 安装失败，继续（runner 可能已预装）"
+                echo "C:\\Program Files (x86)\\WiX Toolset v3.11\\bin" >> "$GITHUB_PATH" || true
+              fi
+              ;;
+            macOS)
+              xcode-select -p || true
+              ;;
+          esac
+
       - name: 编译检查
         shell: bash
         run: |
           set -eu
-          gradle compileKotlin --no-daemon --stacktrace 2>&1 | tee build.log
+          GRADLE=gradle
+          if [ "${{ runner.os }}" = "Windows" ]; then GRADLE=gradle.bat; fi
+          "$GRADLE" compileKotlin --no-daemon --stacktrace 2>&1 | tee compile.log
           exit ${PIPESTATUS[0]}
 
-      - name: 上传编译日志
-        if: always()
+      # 每个格式单独跑：某个格式失败不影响同平台其它格式，也不拖垮其它 runner。
+      - name: 生成原生安装包
         shell: bash
         run: |
-          set -u
+          set -uo pipefail
+          GRADLE=gradle
+          if [ "${{ runner.os }}" = "Windows" ]; then GRADLE=gradle.bat; fi
+          : > package.log
+          for T in ${{ matrix.tasks }}; do
+            echo "===== $T =====" | tee -a package.log
+            if ! "$GRADLE" "$T" --no-daemon --stacktrace 2>&1 | tee -a package.log; then
+              echo "::warning::$T 失败，继续尝试其它格式"
+            fi
+          done
+          OK=0
+          for E in ${{ matrix.formats }}; do
+            if ls build/compose/binaries/main-release/$E/*.$E >/dev/null 2>&1; then OK=1; fi
+          done
+          if [ "$OK" != 1 ]; then
+            echo "::error::${{ matrix.name }} 没有生成任何安装包"
+            tail -80 package.log
+            exit 1
+          fi
+          echo "产物："
+          ls -lh build/compose/binaries/main-release/*/*.* 2>/dev/null || true
+
+      # 不做 zip、不依赖 find/python3：以前 macOS 的 find 不支持 -maxdepth、
+      # Windows Git Bash 没有 python3，这两处是「部分编译/打包失败」的来源。
+      - name: 整理单文件安装包
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p out
+          for E in ${{ matrix.formats }}; do
+            for F in build/compose/binaries/main-release/$E/*.$E; do
+              [ -e "$F" ] || continue
+              cp "$F" "out/GoMusic-26.11.9-${{ matrix.name }}.$E"
+            done
+          done
+          ls -lh out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GoMusic-installers-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+      - name: 保存构建日志
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
           git config user.name ci
           git config user.email ci@example.com
           BR="ci-log-desktop-${{ matrix.name }}-${{ github.run_id }}"
           git checkout -B "$BR"
           mkdir -p ci
-          cp build.log "ci/${{ matrix.name }}.log" || true
-          git add -f "ci/${{ matrix.name }}.log" || true
-          git commit -m "ci: desktop build log ${{ github.run_id }}" || echo "no change"
+          cp compile.log "ci/${{ matrix.name }}-compile.log" || true
+          cp package.log "ci/${{ matrix.name }}-package.log" || true
+          git add -f ci/*.log || true
+          git commit -m "ci: desktop logs ${{ github.run_id }}" || echo "no change"
           git push -f origin "$BR" || true
 
-      - name: 打包可执行分发目录
-        if: success()
-        shell: bash
-        run: gradle createReleaseDistributable --no-daemon
-
-      - name: 压缩分发包
-        shell: bash
-        run: |
-          set -eu
-          ROOT="$GITHUB_WORKSPACE"
-          DIR=$(find "$ROOT/build/compose/binaries" -maxdepth 4 -type d -name app | head -1)
-          if [ -z "$DIR" ]; then echo "::error::找不到 app 目录"; find "$ROOT/build/compose/binaries" -maxdepth 5 || true; exit 1; fi
-          echo "app dir = $DIR"
-          python3 "$ROOT/ci/package.py" "$DIR" "$ROOT/GoMusic-26.11.8-${{ matrix.name }}.zip"
-          ls -lh "$ROOT"/*.zip
-
-      - uses: actions/upload-artifact@v4
+  # 汇总到一次 release，避免四个 runner 并发创建同一个 tag 互相覆盖。
+  release:
+    needs: build
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/desktop-v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: GoMusic-desktop-${{ matrix.name }}
-          path: GoMusic-26.11.8-*.zip
-
-      - name: 发布 Release
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
+          path: out
+          merge-multiple: true
+      - name: 发布安装包
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF##*/}"
-          gh release view "$TAG" >/dev/null 2>&1 ||             gh release create "$TAG" --title "GoMusic 桌面版 $TAG"               --notes "与手机端界面/功能完全一致的 Compose 桌面版（Windows / macOS / Linux）。解压后运行 GoMusic 即可，内置 JRE。"
-          gh release upload "$TAG" GoMusic-26.11.8-*.zip --clobber
+          ls -lh out/
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "GoMusic 桌面版 $TAG" \
+              --notes "仅横屏的 Compose 桌面版，直接提供各平台原生安装包（exe / msi / dmg / deb），内置 JRE，双击安装即可。"
+          fi
+          gh release upload "$TAG" out/* --clobber

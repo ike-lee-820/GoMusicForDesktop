@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "de.myocd"
-version = "26.11.8"
+version = "26.11.9"
 
 // ---------- 平台相关依赖（FFmpeg 原生库 / OpenAL 原生库）----------
 // 只打当前系统的原生库，避免把 5 个平台的 so/dll/dylib 全塞进去（几百 MB）
@@ -95,16 +95,28 @@ compose.desktop {
     application {
         mainClass = "de.myocd.gomusic.DesktopMainKt"
         nativeDistributions {
-            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
+            // 直接产出各平台单文件安装包，不再生成可运行目录后另打 zip。
+            // jpackage 不支持交叉编译：exe/msi 在 Windows runner、dmg 在 macOS、deb 在 Linux 生成。
+            targetFormats(
+                TargetFormat.Exe,   // Windows 安装程序（用户主产物）
+                TargetFormat.Msi,   // Windows 备用安装包
+                TargetFormat.Dmg,   // macOS
+                TargetFormat.Deb,   // Linux
+            )
             packageName = "GoMusic"
-            packageVersion = "26.11.8"
-            description = "GoMusic 桌面版（与手机端界面/功能一致）"
+            packageVersion = "26.11.9"
+            description = "GoMusic 桌面版（仅横屏，与手机端功能一致）"
             vendor = "GoMusic"
             copyright = "GoMusic"
-            modules("java.base", "java.desktop", "java.logging", "java.prefs", "jdk.unsupported")
+            // 桌面端用 OkHttp / AWT / WebP / 系统托盘，补上运行时可能缺的模块
+            modules(
+                "java.base", "java.desktop", "java.logging", "java.prefs",
+                "java.naming", "java.management", "java.xml", "java.sql",
+                "jdk.unsupported", "jdk.crypto.ec",
+            )
             macOS { bundleID = "net.de5.gomusic" }
-            windows { menuGroup = "GoMusic" }
-            linux { packageName = "gomusic" }
+            windows { menuGroup = "GoMusic"; shortcut = true }
+            linux { packageName = "gomusic"; shortcut = true }
             buildTypes.release.proguard { isEnabled.set(false) }
         }
     }

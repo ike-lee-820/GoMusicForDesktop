@@ -1,13 +1,9 @@
 name: Tauri 桌面版
 
+# 上一代 Tauri 版留档：不随 push 自动跑，也不再发布 release。
+# 当前主线是 Compose Desktop（compose-desktop.yml），发布 tag 为 desktop-v*。
+# 需要验证旧版时，在 Actions 页面手动 Run workflow。
 on:
-  push:
-    branches: [main]
-    # 源码在 tauri/ 子目录（仓库根级的 src-tauri/ 是不完整的副本，
-    # 缺 icons/、main.rs、api.rs 等，不能用来构建）
-    paths:
-      - "tauri/**"
-      - ".github/workflows/tauri.yml"
   workflow_dispatch:
 
 # 编译日志要写到独立分支，必须显式给写权限

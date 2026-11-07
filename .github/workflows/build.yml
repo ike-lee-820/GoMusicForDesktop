@@ -1,8 +1,9 @@
-# 已废弃：桌面端已从 Compose Desktop 迁移到 Tauri（见 tauri.yml）。
-# 这里保留只是留档，不再随 push 自动跑 —— 否则每次提交都会红一片。
-# 需要手动验证旧版时，在 Actions 页面点 Run workflow。
+# 已废弃：这是早期 Compose Desktop 打包流程（带分片字体合并）。
+# 当前主线是 compose-desktop.yml —— 直接复用手机端 26.11.7 源码，
+# 不再内置思源宋体，也不再需要合并 fontchunks。
+# 两条旧流程（本文件与 tauri.yml）都只留档，不随 push 自动跑。
 
-name: Build Desktop (Compose, 已废弃)
+name: Build Desktop (早期流程, 已废弃)
 
 on:
   workflow_dispatch:
