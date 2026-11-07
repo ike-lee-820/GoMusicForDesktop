@@ -105,7 +105,10 @@ compose.desktop {
             )
             packageName = "GoMusic"
             packageVersion = "26.11.9"
-            description = "GoMusic 桌面版（仅横屏，与手机端功能一致）"
+            // Windows jpackage 用平台默认编码（GBK）读 args 文件，中文会触发
+            // MalformedInputException: Input length = 1，导致 exe/msi 打包失败。
+            // 这里所有交给 jpackage 的元数据一律用 ASCII。
+            description = "GoMusic Desktop - landscape UI, same features as the Android app"
             vendor = "GoMusic"
             copyright = "GoMusic"
             // 桌面端用 OkHttp / AWT / WebP / 系统托盘，补上运行时可能缺的模块
