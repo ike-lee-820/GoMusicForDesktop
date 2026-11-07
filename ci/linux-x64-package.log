@@ -1,0 +1,26 @@
+===== packageReleaseDeb =====
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.10.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :checkRuntime
+> Task :checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :convertXmlValueResourcesForMain NO-SOURCE
+> Task :copyNonXmlValueResourcesForMain NO-SOURCE
+> Task :prepareComposeResourcesTaskForMain NO-SOURCE
+> Task :generateResourceAccessorsForMain NO-SOURCE
+> Task :generateActualResourceCollectorsForMain UP-TO-DATE
+> Task :generateComposeResClass UP-TO-DATE
+> Task :compileKotlin UP-TO-DATE
+> Task :compileJava NO-SOURCE
+> Task :assembleMainResources
+> Task :processResources
+> Task :classes
+> Task :createRuntimeImage
+> Task :jar
+> Task :prepareAppResources NO-SOURCE
+> Task :unpackDefaultComposeDesktopJvmApplicationResources
+> Task :packageReleaseDeb
+The distribution is written to /home/runner/work/GoMusicForDesktop/GoMusicForDesktop/build/compose/binaries/main-release/deb/gomusic_26.11.9-1_amd64.deb
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run_3-1794093958475.json
+
+BUILD SUCCESSFUL in 1m 50s
+10 actionable tasks: 7 executed, 3 up-to-date
