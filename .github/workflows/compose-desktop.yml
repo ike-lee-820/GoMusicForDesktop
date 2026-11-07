@@ -1,0 +1,80 @@
+name: GoMusic 桌面版（Compose，与手机端一致）
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android-src/**"
+      - "src/main/kotlin/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - ".github/workflows/compose-desktop.yml"
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux-x64
+          - os: windows-latest
+            name: windows-x64
+          - os: macos-14
+            name: macos-arm64
+          - os: macos-15-intel
+            name: macos-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: 编译检查
+        shell: bash
+        run: |
+          set -eu
+          gradle compileKotlin --no-daemon --stacktrace 2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+
+      - name: 打包可执行分发目录
+        shell: bash
+        run: gradle createReleaseDistributable --no-daemon
+
+      - name: 压缩分发包
+        shell: bash
+        run: |
+          set -eu
+          ROOT="$GITHUB_WORKSPACE"
+          DIR=$(find "$ROOT/build/compose/binaries" -maxdepth 4 -type d -name app | head -1)
+          if [ -z "$DIR" ]; then echo "::error::找不到 app 目录"; find "$ROOT/build/compose/binaries" -maxdepth 5 || true; exit 1; fi
+          echo "app dir = $DIR"
+          python3 "$ROOT/ci/package.py" "$DIR" "$ROOT/GoMusic-26.11.8-${{ matrix.name }}.zip"
+          ls -lh "$ROOT"/*.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GoMusic-desktop-${{ matrix.name }}
+          path: GoMusic-26.11.8-*.zip
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF##*/}"
+          gh release view "$TAG" >/dev/null 2>&1 ||             gh release create "$TAG" --title "GoMusic 桌面版 $TAG"               --notes "与手机端界面/功能完全一致的 Compose 桌面版（Windows / macOS / Linux）。解压后运行 GoMusic 即可，内置 JRE。"
+          gh release upload "$TAG" GoMusic-26.11.8-*.zip --clobber

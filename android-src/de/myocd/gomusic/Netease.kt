@@ -1,0 +1,1399 @@
+package de.myocd.gomusic
+
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Request
+import java.io.IOException
+import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
+
+/** 曲库来源：本站 / 网易云 */
+const val SRC_LOCAL = "local"
+const val SRC_NETEASE = "netease"
+
+/** 网易云歌曲在本地索引里的 ssid 前缀 */
+const val NM_PREFIX = "nm"
+
+/** 网易云 API 站 */
+const val NM_BASE = "https://mapi.myocd.de5.net"
+
+fun isNetease(ssid: String?): Boolean = ssid?.startsWith(NM_PREFIX) == true
+fun neteaseIdOf(ssid: String?): Long? =
+    ssid?.takeIf { it.startsWith(NM_PREFIX) }?.removePrefix(NM_PREFIX)?.toLongOrNull()
+
+/** 二维码轮询状态 */
+data class QrStatus(val code: Int, val cookie: String? = null, val message: String? = null)
+
+/**
+ * 登录 / 注册的结果。
+ *
+ * 之前这类接口只返回 cookie 或 null，失败原因全丢了 —— 用户只能看到一句
+ * 「登录失败」，到底是验证码错了、发得太频繁还是服务端不支持，完全看不出来。
+ * 现在把服务端的 code 与 message 一起带回来。
+ */
+data class LoginResult(
+    val cookie: String? = null,
+    val code: Int = -1,
+    val message: String? = null,
+    /** 易盾安全验证页（code -462 / data.url），需用户在浏览器完成后重试 */
+    val verifyUrl: String? = null,
+    /** 服务端给的跳转页，例如「当前登录存在安全风险」的 phoneReuse 页 */
+    val redirectUrl: String? = null,
+    /** 命中风控：无论有没有跳转页都要明确提示，不能静默失败 */
+    val risk: Boolean = false,
+    /** 发送验证码用：true 表示短信已下发 */
+    val sent: Boolean = false,
+) {
+    val ok: Boolean get() = !cookie.isNullOrBlank()
+    val blocked: Boolean get() = risk || !verifyUrl.isNullOrBlank() || !redirectUrl.isNullOrBlank()
+}
+
+
+/** 网易云可选音质档位（从低到高） */
+val NM_LEVELS = listOf(
+    "standard", "higher", "exhigh", "lossless",
+    "hires", "jyeffect", "dolby", "vivid", "jymaster", "sky",
+)
+
+/** 网易云音质档位中文名 */
+fun nmLevelLabel(lv: String): String = when (lv) {
+    "standard" -> "标准 128k"
+    "higher" -> "较高 192k"
+    "exhigh" -> "极高 320k"
+    "lossless" -> "无损 FLAC"
+    "hires" -> "Hi-Res"
+    "jyeffect" -> "高清臻音"
+    "dolby" -> "杜比全景声"
+    "vivid" -> "臻音全景声"
+    "jymaster" -> "超清母带"
+    "sky" -> "沉浸环绕声"
+    else -> lv
+}
+
+/**
+ * 音质名归一化：请求发的是英文档位（standard / hires …），服务端返回的
+ * level 可能是英文，也可能是中文音质名。归一到同一套英文 key 才能比对。
+ * 对照：standard=>标准 higher=>较高 exhigh=>极高 lossless=>无损 hires=>Hi-Res
+ * jyeffect=>高清臻音 dolby=>杜比全景声 vivid=>臻音全景声
+ * jymaster=>超清母带 sky=>沉浸环绕声
+ */
+fun nmLevelKey(name: String): String = when (name.trim().lowercase()) {
+    "standard", "标准" -> "standard"
+    "higher", "较高" -> "higher"
+    "exhigh", "极高" -> "exhigh"
+    "lossless", "无损" -> "lossless"
+    "hires", "hi-res" -> "hires"
+    "jyeffect", "高清臻音" -> "jyeffect"
+    "dolby", "杜比全景声" -> "dolby"
+    "vivid", "臻音全景声" -> "vivid"
+    "jymaster", "超清母带" -> "jymaster"
+    "sky", "沉浸环绕声" -> "sky"
+    else -> name.trim().lowercase()
+}
+
+/** 本站音质键 -> 网易云默认档位 */
+fun nmLevelOfQuality(quality: String): String = when (quality) {
+    "lossless" -> "lossless"
+    "high" -> "exhigh"
+    "normal" -> "higher"
+    else -> "standard"
+}
+
+object Netease {
+    val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    /** 登录后拿到的 cookie，由 Prefs 注入；所有请求自动带上 */
+    @Volatile
+    var cookie: String = ""
+        set(v) {
+            // 服务端 /login/cellphone 返回的 cookie 是一整串 Set-Cookie 文本，
+            // 里面夹着 Max-Age / Expires / Path 等属性，还有大量同名重复项。
+            // 直接拼进请求会让整串 cookie 解析失败（登录了却拿不到高音质）。
+            // 统一在这里清洗：只留真正的 key=value，去重，并强制带 os=pc
+            // （网易云按 PC 端才给无损 / Hi-Res 等档位）。
+            field = if (v.isBlank()) "" else normalizeCookie(v)
+            if (field.isNotBlank()) NmLog.note("已设置 cookie，包含键：${cookieKeys(field)}（长度 ${field.length}，os=pc）")
+        }
+
+    /** 日志里只记 cookie 的键名，不记值，避免泄露登录凭证 */
+    private fun cookieKeys(c: String): String =
+        c.split(";").map { it.substringBefore("=").trim() }.filter { it.isNotBlank() }.joinToString(",")
+
+    /** Set-Cookie 属性名，不是 cookie 键，必须剔除 */
+    private val COOKIE_ATTRS = setOf(
+        "max-age", "expires", "path", "domain", "secure",
+        "httponly", "samesite", "priority", "partitioned", "version",
+    )
+
+    /** 把原始 cookie 串洗干净，并补上 os=pc 保证能拿到高音质 */
+    private fun normalizeCookie(raw: String): String {
+        val map = LinkedHashMap<String, String>()
+        raw.split(";").forEach { seg ->
+            val t = seg.trim()
+            if (t.isEmpty()) return@forEach
+            val k = t.substringBefore("=").trim()
+            val v = t.substringAfter("=", "").trim()
+            if (k.isEmpty() || k.lowercase() in COOKIE_ATTRS) return@forEach
+            // 同名重复（MUSIC_A_T / MUSIC_R_T 会出现十几次）只留非空值
+            if (v.isNotEmpty() || !map.containsKey(k)) map[k] = v
+        }
+        map["os"] = "pc"
+        return map.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    }
+
+    /** 音质：本站质量键 -> 网易云 level（从高到低，逐个尝试直到拿到地址） */
+    private fun levels(quality: String): List<String> = when (quality) {
+        "lossless" -> listOf("lossless", "exhigh", "higher", "standard")
+        "high" -> listOf("exhigh", "higher", "standard")
+        "normal" -> listOf("higher", "standard")
+        else -> listOf("standard")
+    }
+
+    private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
+
+    /**
+     * cookie 必须用百分号编码（空格 -> %20），不能用 URLEncoder。
+     *
+     * URLEncoder 会把空格编成 "+"，而服务端用 decodeURIComponent 解析时
+     * "+" 不会被还原成空格，cookie 里的 "; " 会变成 ";+"，
+     * 导致整串 cookie 解析失败 —— 表现就是「登录了却取不到播放地址」。
+     */
+    private fun encCookie(s: String): String {
+        val out = StringBuilder(s.length + 32)
+        for (b in s.toByteArray(Charsets.UTF_8)) {
+            val c = b.toInt() and 0xFF
+            val keep = (c in 'A'.code..'Z'.code) || (c in 'a'.code..'z'.code) ||
+                (c in '0'.code..'9'.code) || c == '-'.code || c == '_'.code ||
+                c == '.'.code || c == '!'.code || c == '~'.code || c == '*'.code ||
+                c == '('.code || c == ')'.code
+            if (keep) out.append(c.toChar())
+            else out.append('%').append("%02X".format(c))
+        }
+        return out.toString()
+    }
+
+    /**
+     * 发一次 GET。
+     * 完整 URL 与完整响应都会写进日志文件（见 [NmLog]）。
+     * 失败时记日志并返回空对象，绝不让异常冒到调用方造成闪退。
+     */
+    private fun get(path: String, vararg params: Pair<String, String>): JsonObject {
+        val sb = StringBuilder(NM_BASE).append(path).append('?')
+        params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
+        // unblock=true：启用解灰（变灰歌曲匹配第三方音源）。
+        // 注意：/song/url/v1 不支持自定义解灰源（会返回 msg 警告并忽略），
+        // 这种情况要走 /song/url/match，见 audioUrl 的兜底。
+        // 登录 / 发验证码这类「换凭证」的接口按服务端验证过的形式发：
+        // 不带 unblock（解灰参数对登录无意义）、不自动带旧 cookie
+        // （带着旧登录态更容易被判「当前登录存在安全风险」）。
+        val cred = isCredentialPath(path)
+        if (!cred) sb.append("unblock=true&")
+        // 所有网易云 API 请求（含登录、搜索、取地址、歌词）统一带随机国内 IP，
+        // 绕开网易对境外 IP 的 460 cheating。调用方若已显式带则不重复追加。
+        if (params.none { it.first.equals("randomCNIP", ignoreCase = true) }) {
+            sb.append("randomCNIP=true&")
+        }
+        if (!cred && cookie.isNotBlank()) sb.append("cookie=").append(encCookie(cookie)).append('&')
+        sb.append("timestamp=").append(System.currentTimeMillis())
+        val url = sb.toString()
+        NmLog.req(url)
+        var last: Exception? = null
+        // 失败自动重试：网络抖动 / 服务端偶发错误时多试几次。
+        // 只重试 2 次（间隔 300/700ms）：之前重试 3 次且间隔递增到 1.6s，
+        // 一次拿不到地址就要多花近 3 秒，取音源要试多个档位时慢得明显。
+        val delays = longArrayOf(300, 700)
+        for (i in 0..delays.size) {
+            try {
+                // 不要再带 Connection: close —— 它关掉了连接复用，
+                // 每个请求都要重新 TCP + TLS 握手，是「网易云请求慢」的主因
+                val req = Request.Builder().url(url).build()
+                Api.client.newCall(req).execute().use { r ->
+                    val t = r.body?.string().orEmpty()
+                    NmLog.res(url, r.code, t)
+                    if (t.isBlank()) throw IOException("HTTP ${r.code} (空响应)")
+                    val el = runCatching { json.parseToJsonElement(t) }.getOrNull()
+                    if (el is JsonObject) {
+                        // HTTP 400/403 常带着完整的业务错误（例如 -462 易盾验证、
+                        // 10004 安全风险）。以前一律当网络错误重试 3 次，body 被丢掉，
+                        // 上层只拿到空对象 → code -1、msg null，既没提示也没跳转。
+                        // 这类是确定性结果，重试只会换一个新的 verifyToken 并白等几秒，
+                        // 直接把 JSON 交给调用方按 code 处理。
+                        if (!r.isSuccessful) {
+                            NmLog.note("接口返回业务错误 HTTP ${r.code} code=${el.code()}，不再重试")
+                        }
+                        return el
+                    }
+                    if (r.isSuccessful) throw IOException("响应不是 JSON 对象")
+                    throw IOException("HTTP ${r.code}")
+                }
+            } catch (e: Exception) {
+                last = e
+                NmLog.note("请求第 ${i + 1} 次失败：$path -> ${e.message}")
+                NmLog.err(url, e)
+                if (i < delays.size) runCatching { Thread.sleep(delays[i]) }
+            }
+        }
+        NmLog.note("请求最终失败：$path -> ${last?.message}")
+        return JsonObject(emptyMap())
+    }
+
+    private fun JsonObject.str(vararg keys: String): String? {
+        for (k in keys) {
+            val v = this[k] as? JsonPrimitive
+            if (v != null && v.isString && v.content.isNotBlank()) return v.content
+        }
+        return null
+    }
+
+    private fun JsonObject.obj(k: String): JsonObject? = this[k] as? JsonObject
+
+    /**
+     * 递归找 cookie：不同接口返回的位置不一样（顶层 cookie / data.cookie / cookies），
+     * 找不到就返回空，避免漏掉登录态。
+     */
+    private fun findCookie(o: JsonObject): String? {
+        val direct = listOf("cookie", "cookies").firstNotNullOfOrNull { k ->
+            (o[k] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() && it.contains("=") }
+        }
+        if (direct != null) return direct
+        for ((_, v) in o) {
+            if (v is JsonObject) {
+                val r = findCookie(v)
+                if (r != null) return r
+            }
+        }
+        return null
+    }
+
+    private fun JsonObject.code(): Int =
+        (this["code"] as? JsonPrimitive)?.content?.toIntOrNull() ?: -1
+
+    /**
+     * 封面高清化：网易云图片支持 ?param=宽y高。
+     *
+     * 默认 1000x1000（原来 300），播放器大封面在 3x 屏上不再被放大三倍。
+     * 上游自带的 ?param=100y100 也会被强制覆盖，具体见 [hdCoverUrl]。
+     */
+    private fun pic(u: String?, size: Int = 1000): String? {
+        if (u.isNullOrBlank()) return null
+        if (!u.startsWith("http")) return null
+        return hdCoverUrl(u, size)
+    }
+
+    /** 从 al / artists / ar 里取歌手名 */
+    private fun artistsOf(o: JsonObject): String {
+        (o["ar"] as? JsonElement)?.jsonArray?.let { arr ->
+            val s = arr.mapNotNull { (it as? JsonObject)?.str("name") }.joinToString("/")
+            if (s.isNotBlank()) return s
+        }
+        (o["artists"] as? JsonElement)?.jsonArray?.let { arr ->
+            val s = arr.mapNotNull { (it as? JsonObject)?.str("name") }.joinToString("/")
+            if (s.isNotBlank()) return s
+        }
+        return ""
+    }
+
+    private fun albumNameOf(o: JsonObject): String =
+        o.obj("al")?.str("name") ?: o.obj("album")?.str("name") ?: ""
+
+    private fun coverOf(o: JsonObject): String? =
+        pic(o.obj("al")?.str("picUrl"))
+            ?: pic(o.obj("album")?.str("picUrl", "blurPicUrl", "pic"))
+            ?: pic(o.str("picUrl", "img1v1Url", "cover"))
+
+    private fun idOf(o: JsonObject?, key: String = "id"): Long =
+        ((o?.get(key) as? JsonPrimitive)?.content?.toLongOrNull())
+            ?: ((o?.get(key) as? JsonPrimitive)?.content?.toDoubleOrNull()?.toLong())
+            ?: 0L
+
+    private fun toSong(o: JsonObject): Song? {
+        val id = idOf(o)
+        if (id <= 0L) return null
+        val al = o.obj("al") ?: o.obj("album")
+        val ar = (o["ar"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+            ?: (o["artists"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+        return Song(
+            ssid = "$NM_PREFIX$id",
+            title = o.str("name") ?: "",
+            artist = artistsOf(o),
+            album = albumNameOf(o),
+            coverUrl = coverOf(o),
+            source = SRC_NETEASE,
+            nmId = id,
+            nmAlbumId = idOf(al),
+            nmArtistId = idOf(ar),
+            // mv 字段就是 MV 的 id，0 表示没有 MV
+            mvId = idOf(o, "mv"),
+        )
+    }
+
+    // ================= 搜索 =================
+
+    /** type: 1 单曲 10 专辑 100 歌手；offset 用于翻页 */
+    private fun rawSearch(keywords: String, type: Int, limit: Int, offset: Int = 0): JsonObject =
+        get(
+            "/search",
+            "keywords" to keywords,
+            "type" to type.toString(),
+            "limit" to limit.toString(),
+            "offset" to offset.toString(),
+        )
+
+    /** 搜索结果的数组：兼容 result.xxx 与顶层 xxx 两种结构 */
+    private fun resultArray(root: JsonObject, key: String): List<JsonObject> {
+        val fromResult = (root.obj("result")?.get(key) as? JsonElement)?.jsonArray
+        val direct = (root[key] as? JsonElement)?.jsonArray
+        val arr = fromResult ?: direct ?: return emptyList()
+        return arr.mapNotNull { it as? JsonObject }
+    }
+
+    /**
+     * 用 /song/detail 按 id 补全信息。
+     * 搜索接口返回的 al.picUrl 经常是空的，详情接口能拿到完整封面 / 专辑 / 歌手。
+     */
+    fun enrich(songs: List<Song>): List<Song> {
+        val ids = songs.mapNotNull { it.nmId.takeIf { id -> id > 0 } }.distinct()
+        if (ids.isEmpty()) return songs
+        val detail = runCatching { songDetail(ids) }.getOrDefault(emptyMap())
+        if (detail.isEmpty()) {
+            NmLog.note("song/detail 无返回，沿用搜索结果")
+            return songs
+        }
+        return songs.map { s ->
+            val d = s.nmId.takeIf { it > 0 }?.let { detail[it] }
+            if (d == null) {
+                s
+            } else {
+                s.copy(
+                    title = d.title.takeIf { it.isNotBlank() } ?: s.title,
+                    artist = d.artist.takeIf { it.isNotBlank() } ?: s.artist,
+                    album = d.album.takeIf { it.isNotBlank() } ?: s.album,
+                    coverUrl = d.coverUrl ?: s.coverUrl,
+                    // 搜索结果里的 mv 字段有时是 0，详情里能拿到真的。
+                    // 补上才能「第一次放这首歌 MV 按钮就在」
+                    mvId = s.mvId.takeIf { it > 0L } ?: d.mvId,
+                )
+            }
+        }
+    }
+
+    /** /song/detail?ids=1,2,3 -> id -> 详情 */
+    private fun songDetail(ids: List<Long>): Map<Long, Song> {
+        val root = get("/song/detail", "ids" to ids.joinToString(","))
+        val arr = resultArray(root, "songs")
+        if (arr.isEmpty()) NmLog.note("song/detail 没有 songs 字段")
+        return arr.mapNotNull { o ->
+            val s = toSong(o) ?: return@mapNotNull null
+            val id = s.nmId
+            if (id <= 0) null else id to s
+        }.toMap()
+    }
+
+    /** 单曲详情：播放前按 id 取完整封面 / 专辑 / 歌手 */
+    fun detailOf(id: Long): Song? {
+        val m = runCatching { songDetail(listOf(id)) }.getOrDefault(emptyMap())
+        return m[id]
+    }
+
+    fun searchSongs(keywords: String, limit: Int = 20, offset: Int = 0): List<Song> {
+        val root = rawSearch(keywords, 1, limit, offset)
+        val arr = resultArray(root, "songs")
+        if (arr.isEmpty()) {
+            NmLog.note("搜索单曲无结果：keywords=$keywords offset=$offset")
+            return emptyList()
+        }
+        val list = arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } }
+        NmLog.note("搜索单曲 offset=$offset 得到 ${list.size} 首，开始用 song/detail 补全信息")
+        return enrich(list)
+    }
+
+    /**
+     * 专辑搜索。
+     * type=10 经常返回空（或需要登录），这时用单曲结果里的专辑兜底，
+     * 保证「专辑」标签在网易云曲库下也能出内容。
+     */
+    fun searchAlbums(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
+        val out = LinkedHashMap<String, Group>()
+        val arr = resultArray(rawSearch(keywords, 10, limit, offset), "albums")
+        NmLog.note("搜索专辑 type=10 返回 ${arr.size} 条")
+        arr.forEach { o ->
+            val id = (o["id"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return@forEach
+            val name = o.str("name").orEmpty()
+            if (name.isBlank()) return@forEach
+            out["al$id"] = Group(
+                title = name,
+                subtitle = o.obj("artist")?.str("name")
+                    ?: o.obj("ar")?.str("name") ?: "",
+                cover = pic(o.str("picUrl", "blurPicUrl", "pic")),
+                songs = emptyList(),
+                album = name,
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "album",
+            )
+        }
+        if (out.isEmpty()) {
+            // 兜底：拿单曲结果里出现的专辑聚合成专辑卡片
+            NmLog.note("专辑搜索为空，改用单曲结果聚合专辑")
+            resultArray(rawSearch(keywords, 1, 30), "songs").forEach { o ->
+                val al = o.obj("al") ?: o.obj("album") ?: return@forEach
+                val id = (al["id"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return@forEach
+                val name = al.str("name").orEmpty()
+                if (name.isBlank()) return@forEach
+                out["al$id"] = Group(
+                    title = name,
+                    subtitle = artistsOf(o),
+                    cover = pic(al.str("picUrl", "blurPicUrl", "pic")),
+                    songs = emptyList(),
+                    album = name,
+                    source = SRC_NETEASE,
+                    nmId = id,
+                    nmKind = "album",
+                )
+            }
+            NmLog.note("聚合得到 ${out.size} 个专辑")
+        }
+        return out.values.toList()
+    }
+
+    /**
+     * 歌手搜索。type=100 返回空时，用单曲结果里的歌手聚合兜底，
+     * 保证「歌手」标签在网易云曲库下一定出内容。
+     */
+    fun searchArtists(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
+        val arr = resultArray(rawSearch(keywords, 100, limit, offset), "artists")
+        NmLog.note("搜索歌手 type=100 返回 ${arr.size} 条")
+        val out = LinkedHashMap<Long, Group>()
+        arr.forEach { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@forEach
+            out[id] = Group(
+                title = name,
+                subtitle = "网易云歌手",
+                cover = pic(o.str("picUrl", "img1v1Url")),
+                songs = emptyList(),
+                artist = name,
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "artist",
+            )
+        }
+        if (out.isEmpty()) {
+            NmLog.note("歌手搜索为空，改用单曲结果聚合歌手")
+            resultArray(rawSearch(keywords, 1, 30), "songs").forEach { o ->
+                val ar = (o["ar"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+                    ?: (o["artists"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+                    ?: return@forEach
+                val id = idOf(ar)
+                val name = ar.str("name").orEmpty()
+                if (id <= 0L || name.isBlank()) return@forEach
+                if (out.containsKey(id)) return@forEach
+                out[id] = Group(
+                    title = name,
+                    subtitle = "网易云歌手",
+                    cover = pic(ar.str("picUrl", "img1v1Url")),
+                    songs = emptyList(),
+                    artist = name,
+                    source = SRC_NETEASE,
+                    nmId = id,
+                    nmKind = "artist",
+                )
+            }
+            NmLog.note("聚合得到 ${out.size} 个歌手")
+        }
+        return out.values.toList()
+    }
+
+    // ================= 播放 / 歌词 / 详情 =================
+
+    /**
+     * 取播放地址。
+     *
+     * 只用新版接口 /song/url/v1（level 音质档位），不再走已废弃的 /song/url。
+     * 每个音质档位依次尝试：
+     * 1. v1（已带 unblock=true，解灰匹配第三方音源）
+     * 2. v1 + randomCNIP（随机国内 IP，绕开网易对境外 IP 的 460 cheating）
+     * 3. v1 + realIP（显式指定国内 IP）
+     * 都拿不到就降一档音质继续，直到 standard。
+     */
+    /**
+     * 探测这首歌实际有哪些音质：每个档位都试一次，能拿到地址的才返回。
+     *
+     * 每个档位只走一次 v1 基础请求（不再叠加 randomCNIP / realIP），
+     * 避免探测一次就发几十个请求拖慢播放。
+     */
+    /**
+     * 音质探测结果。
+     *
+     * 三态是关键：请求失败不等于「没有音源」。
+     * 之前只分「有 / 无」，请求失败被当成「无」，而调用方拿到空列表时
+     * 又回退成显示全部档位 —— 两头都不准，于是出现「没有的也显示有」。
+     */
+    data class LevelProbe(
+        /** 确认有音源（接口返回了地址） */
+        val ok: List<String>,
+        /** 确认没有（接口正常返回但地址为空） */
+        val absent: List<String>,
+    )
+
+    fun availableLevels(id: Long): LevelProbe {
+        // 7 个档位并发探测：串行要 7 个来回，菜单里「哪些档位有音源」
+        // 要等很久才显示得出来。并发后总耗时等于最慢的那一个请求。
+        // 每个档位返回三态：true=有 / false=没有 / null=没探出来（请求失败）
+        val res = runBlocking(Dispatchers.IO) {
+            NM_LEVELS.map { lv ->
+                lv to async {
+                    fun probe(): Boolean? {
+                        val r = runCatching {
+                            getOnce("/song/url/v1", "id" to id.toString(), "level" to lv)
+                        }.getOrNull() ?: return null
+                        // 非 200 是接口报错，同样算没探出来，不能当成「没有音源」
+                        if (r.code() != 200) return null
+                        val first =
+                            (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+                        val u = first?.str("url")
+                            ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
+                        if (u.isNullOrBlank()) return false
+                        // 关键：请求 hires 时服务端可能降档返回 standard 的地址。
+                        // 以前只要有 url 就算这一档「有音源」，于是菜单把没有的
+                        // 档位也显示成有，切过去听到的其实还是低音质。
+                        // 现在要求返回的音质名与发送的音质名相同才算有；
+                        // 明确不同 = 这一档没有；压根没返回 level = 没探出来
+                        // （返回 null，既不置灰也不冒充有）。
+                        val got = first?.str("level", "levelName", "quality")
+                            ?.takeIf { it.isNotBlank() }?.let { nmLevelKey(it) }
+                        if (got == null) return null
+                        if (got != lv) {
+                            NmLog.note("音质探测 $lv 被降档为 $got，视为无音源")
+                            return false
+                        }
+                        return true
+                    }
+                    // 只探一次，不重试：7 个档位各重试一次就是 14 个请求，
+                    // 而它只是用来给菜单置灰「无音源」，不值得为偶发抖动
+                    // 把请求量翻倍。探不出来按 unknown 处理（不置灰）
+                    probe()
+                }
+            }.map { (lv, d) -> lv to d.await() }
+        }
+        val ok = res.filter { it.second == true }.map { it.first }
+        val absent = res.filter { it.second == false }.map { it.first }
+        NmLog.note("音质探测 id=$id -> 有=$ok 无=$absent")
+        return LevelProbe(ok, absent)
+    }
+
+    /**
+     * 音源地址缓存。
+     *
+     * 取一次地址最坏要串行试 9 个音质档位 × 3 种参数，二十几次请求，
+     * 而这步是在 ExoPlayer 的准备线程上同步做的，等于点一首歌要干等
+     * 二十多个 HTTP 往返才开始出声——这就是「加载极慢」的原因。
+     * 缓存后切歌回来、重播都是秒开。地址有时效，过期时间放短一点。
+     */
+    private val urlCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+
+    /**
+     * 负缓存：取不到地址时记一笔，短时间内的重复请求直接放弃。
+     *
+     * 没有它时，一首取不到音源的歌被点一次就要重新走一遍十几个请求，
+     * 连续点/自动切歌会把连接池占满，连正常歌曲也跟着变慢。
+     */
+    private val urlMiss = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** 缓存有效期：网易云 CDN 地址一般能撑几十分钟，留足余量取 10 分钟 */
+    private const val URL_TTL_MS = 10 * 60 * 1000L
+
+    /** 负缓存有效期：取不到往往只是暂时的（登录态、限流），30 秒后允许重试 */
+    private const val URL_MISS_TTL_MS = 30_000L
+
+    /** 在途请求：同一首歌同时被预取和播放解析时共用一次探测，不重复发 */
+    private val urlInFlight = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.locks.ReentrantLock>()
+    private val inflightLock = Any()
+
+    private fun cacheKey(id: Long, quality: String, level: String?): String =
+        "$id|$quality|${level.orEmpty()}|${cookie.take(8).hashCode()}"
+
+    /** 预取音源地址：在后台提前把地址取好，等真正播放时直接命中缓存 */
+    fun prefetchAudioUrl(id: Long, quality: String, level: String? = null) {
+        val k = cacheKey(id, quality, level)
+        val hit = urlCache[k]
+        if (hit != null && System.currentTimeMillis() - hit.second < URL_TTL_MS) return
+        GlobalScope.launch(Dispatchers.IO) {
+            runCatching { audioUrl(id, quality, level) }
+                .onFailure { NmLog.note("预取音源失败：${it.message}") }
+        }
+    }
+
+    fun audioUrl(id: Long, quality: String, level: String? = null): String? =
+        audioWithLevel(id, quality, level)?.first
+
+    /**
+     * 取地址并带回**实际拿到的档位**。
+     *
+     * 下载必须用这个：请求 lossless 时歌曲可能只有 320k，
+     * resolveAudioUrl 会一路降档，但返回的只有地址 ——
+     * 如果仍按请求的档位记录，下载记录里的音质就是假的
+     * （存着「无损」，实际是 320k，离线播放与文件命名都会错）。
+     */
+    fun audioWithLevel(id: Long, quality: String, level: String? = null): Pair<String, String>? {
+        // 命中缓存直接返回，不再走那一长串探测
+        val k = cacheKey(id, quality, level)
+        urlCache[k]?.let { (u, t) ->
+            if (System.currentTimeMillis() - t < URL_TTL_MS) {
+                NmLog.note("音源命中缓存 id=$id")
+                return u to (level?.takeIf { it.isNotBlank() } ?: quality)
+            }
+            urlCache.remove(k)
+        }
+        // 负缓存：刚取过且没取到，不再重复打一轮请求
+        val missAt = urlMiss[k]
+        if (missAt != null) {
+            if (System.currentTimeMillis() - missAt < URL_MISS_TTL_MS) {
+                NmLog.note("音源负缓存命中，跳过 id=$id")
+                return null
+            }
+            urlMiss.remove(k)
+        }
+        // 在途去重：预取和播放解析同时到时，后来的直接等前一次的结果，
+        // 不再各发一轮（否则同一首歌瞬间打出二十几个请求）
+        val lock = urlInFlight.computeIfAbsent(k) { java.util.concurrent.locks.ReentrantLock() }
+        val mine = lock.tryLock()
+        if (!mine) {
+            // 最多等 6 秒（while 而不是 repeat：lambda 里不能用 break）
+            var waited = 0
+            while (waited < 6000 && !urlCache.containsKey(k) && !urlMiss.containsKey(k)) {
+                runCatching { Thread.sleep(150) }
+                waited += 150
+            }
+            urlCache[k]?.let { (u, t) ->
+                if (System.currentTimeMillis() - t < URL_TTL_MS)
+                    return u to (level?.takeIf { it.isNotBlank() } ?: quality)
+            }
+            return null
+        }
+        return try {
+            val hit = resolveAudioUrl(id, quality, level)
+            if (hit != null) urlCache[k] = hit.first to System.currentTimeMillis()
+            else urlMiss[k] = System.currentTimeMillis()
+            hit
+        } finally {
+            lock.unlock()
+            urlInFlight.remove(k)
+        }
+    }
+
+    /** 取播放地址专用客户端：短超时。取地址要快，失败就换下一种，不能干等 */
+    private val urlClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .callTimeout(12, TimeUnit.SECONDS)
+        .dispatcher(
+            Dispatcher().apply {
+                // OkHttp 默认每 host 只有 5 个并发，一批探测会被切成两批走。
+                // 这里放宽到 8：探测用的是「先首选档位 3 个」这种小批量，
+                // 不需要太多，但也不该被默认的 5 卡住
+                maxRequests = 16
+                maxRequestsPerHost = 8
+            }
+        )
+        .build()
+
+    /**
+     * 单次请求：不重试、不 sleep。
+     *
+     * 通用 get() 会重试 4 次并递增 sleep（约 3 秒），而取播放地址时
+     * 一个档位拿不到就该立刻换下一个，重试只会把时间白白耗掉。
+     */
+    private fun getOnce(path: String, vararg params: Pair<String, String>): JsonObject? {
+        val sb = StringBuilder(NM_BASE).append(path).append('?')
+        params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
+        sb.append("unblock=true&")
+        if (params.none { it.first.equals("randomCNIP", ignoreCase = true) }) {
+            sb.append("randomCNIP=true&")
+        }
+        if (cookie.isNotBlank()) sb.append("cookie=").append(encCookie(cookie)).append('&')
+        sb.append("timestamp=").append(System.currentTimeMillis())
+        val url = sb.toString()
+        return try {
+            // 同样不带 Connection: close，保持连接复用
+            val req = Request.Builder().url(url).build()
+            urlClient.newCall(req).execute().use { r ->
+                val t = r.body?.string().orEmpty()
+                NmLog.req(url)
+                NmLog.res(url, r.code, t)
+                if (!r.isSuccessful || t.isBlank()) null
+                else json.parseToJsonElement(t) as? JsonObject
+            }
+        } catch (e: Exception) {
+            NmLog.note("单次请求失败：$path -> ${e.message}")
+            null
+        }
+    }
+
+    private data class UrlHit(val lv: String, val url: String)
+
+    /**
+     * 并发探测：把「档位 × 3 种参数变体」的请求一起发出去。
+     *
+     * 原来是一档一档串行试，最多 15 个档位 × 3 种参数 = 45 次串行请求，
+     * 每次还要重试 4 遍，等于点一首歌要干等几十个 HTTP 往返 —— 这就是
+     * 「加载极慢」的根因。改成并发后，耗时从「所有请求之和」变成
+     * 「最慢那一个请求」，通常一两秒就好。
+     */
+    private fun probeLevels(id: Long, levels: List<String>): List<UrlHit> {
+        if (levels.isEmpty()) return emptyList()
+        // getOnce 现在统一带 randomCNIP=true，原来专门发一条 randomCNIP 变体
+        // 已经和基础请求完全一样，去掉它，请求量直接少 1/3。
+        val jobs = levels.flatMap { lv ->
+            listOf(
+                lv to listOf("id" to id.toString(), "level" to lv),
+                lv to listOf("id" to id.toString(), "level" to lv, "realIP" to FALLBACK_CN_IP),
+            )
+        }
+        return runBlocking(Dispatchers.IO) {
+            jobs.map { (lv, ps) ->
+                async {
+                    val r = getOnce("/song/url/v1", *ps.toTypedArray()) ?: return@async null
+                    val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+                    val u = first?.str("url")
+                        ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
+                    if (u.isNullOrBlank()) return@async null
+                    // 服务端降档返回时，实际档位以它返回的为准，
+                    // 否则界面会把 standard 的地址标成 Hi-Res。
+                    val got = first?.str("level", "levelName", "quality")
+                        ?.takeIf { it.isNotBlank() }?.let { nmLevelKey(it) }
+                    UrlHit(if (got.isNullOrBlank()) lv else got, u)
+                }
+            }.awaitAll().filterNotNull()
+        }
+    }
+
+    /**
+     * 解析播放地址，返回「地址 + 实际档位」。
+     * 档位一路降档时以实际拿到的那一档为准（见 [audioWithLevel]）。
+     */
+    private fun resolveAudioUrl(id: Long, quality: String, level: String?): Pair<String, String>? {
+        NmLog.note("开始取播放地址 id=$id quality=$quality level=$level（分档探测）")
+        // 候选档位：指定的档位优先，然后按音质设置降档。
+        // 不再追加全部 NM_LEVELS：那会多出十来个几乎用不上的档位，
+        // levels(quality) 本身已经一路降到 standard
+        val cands = (listOfNotNull(level?.takeIf { it.isNotBlank() }) + levels(quality)).distinct()
+
+        // 分两步探测，而不是一次把「所有档位 × 3 种参数」全打出去：
+        // 那通常是 12 个并发请求，服务端一慢就全部堆在一起，
+        // 每个都要等最慢的那个才返回 —— 这就是「半天播不出来」。
+        // 先只试最高那一档的 3 种参数（3 个请求），命中就直接用；
+        // 拿不到再对其余档位并发。绝大多数歌在第一步就拿到了。
+        val first = probeLevels(id, listOf(cands.first()))
+        first.firstOrNull()?.let {
+            NmLog.note("首选档位拿到地址（${it.lv}）：${it.url}")
+            return it.url to it.lv
+        }
+        val rest = cands.drop(1)
+        val hits = if (rest.isEmpty()) emptyList() else first + probeLevels(id, rest)
+        // 按档位优先级取能用的最高音质
+        for (lv in cands) {
+            hits.firstOrNull { it.lv == lv }?.let {
+                NmLog.note("拿到地址（$lv）：${it.url}")
+                return it.url to lv
+            }
+        }
+        // v1 拿不到时走 /song/url/match 解灰匹配（歌曲变灰时 v1 的地址会是空）
+        runCatching {
+            val r = getOnce("/song/url/match", "id" to id.toString())
+            val u = ((r?.get("data") as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject)?.str("url")
+            if (!u.isNullOrBlank()) {
+                NmLog.note("match 解灰拿到地址：$u")
+                // 解灰接口不返回档位，按请求的档位记（能拿到就说明这一档可用）
+                return u to (level?.takeIf { it.isNotBlank() } ?: quality)
+            }
+        }
+        // 兜底：拿游客 cookie 再试一次（未登录/登录态失效时网易会返回 301 / 400 需验证）
+        NmLog.note("登录态下取不到地址，尝试游客 cookie 再试一次")
+        val anon = runCatching { anonCookie() }.getOrNull()
+        if (!anon.isNullOrBlank()) {
+            val saved = cookie
+            cookie = anon
+            try {
+                probeLevels(id, levels(quality)).firstOrNull()?.let {
+                    NmLog.note("游客 cookie 拿到地址（${it.lv}）：${it.url}")
+                    return it.url to it.lv
+                }
+            } finally {
+                cookie = saved
+            }
+        }
+        NmLog.note("所有方式都没有拿到播放地址 id=$id")
+        return null
+    }
+
+    /** 游客 cookie 缓存：一次会话里重复取只会拖慢取地址，缓存 10 分钟 */
+    private var anonCache: Pair<String, Long>? = null
+
+    /**
+     * 游客 cookie：未登录状态下部分接口会报「需要验证」，用它规避。
+     *
+     * 走 getOnce 而不是 get()：get() 失败会重试两次并 sleep（约 1 秒），
+     * 而这个接口常在取地址的兜底路径上被调用，多等一秒就是「半天播不出来」。
+     */
+    fun anonCookie(): String? {
+        anonCache?.let { (ck, t) ->
+            if (System.currentTimeMillis() - t < 10 * 60 * 1000L) return ck
+        }
+        val r = getOnce("/register/anonimous") ?: return null
+        val ck = r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
+        NmLog.note("游客 cookie：${if (ck.isNullOrBlank()) "未拿到" else "已拿到"}")
+        if (!ck.isNullOrBlank()) anonCache = ck to System.currentTimeMillis()
+        return ck
+    }
+
+    /** realIP 兜底用的国内 IP（网易对境外 IP 会返回 460 cheating） */
+    private const val FALLBACK_CN_IP = "116.25.146.177"
+
+    /**
+     * 歌词。
+     *
+     * 先发一次不带重试的快请求：服务端正常时这就是一次往返。
+     * 拿不到（网络抖动、偶发空响应）才退回带重试的 get()，
+     * 避免每次切歌都先白等一轮重试的 sleep —— 歌词慢主要来自这里。
+     */
+    fun lyric(id: Long): String {
+        val fast = getOnce("/lyric", "id" to id.toString())
+            ?.obj("lrc")?.str("lyric")
+        if (!fast.isNullOrBlank()) return fast
+        val lrc = get("/lyric", "id" to id.toString()).obj("lrc")?.str("lyric")
+        if (lrc.isNullOrBlank()) NmLog.note("歌词为空 id=$id")
+        return lrc ?: ""
+    }
+
+    /**
+     * 专辑 / 歌手的歌曲列表。
+     * 专辑走 /album，歌手走 /artist/songs；拿到后再用 song/detail 补全。
+     */
+    /** 专辑 / 歌手的歌曲列表。歌手支持 offset 分页（滑到底继续加载） */
+    fun songsOf(kind: String, id: Long, limit: Int = 30, offset: Int = 0): List<Song> {
+        NmLog.note("取 $kind 的歌曲 id=$id offset=$offset")
+        val root = if (kind == "album") {
+            get("/album", "id" to id.toString())
+        } else if (kind == "playlist") {
+            // 榜单 / 歌单：tracks 里就是歌曲
+            val r = get("/playlist/detail", "id" to id.toString())
+            val arr = (r.obj("playlist")?.get("tracks") as? JsonElement)?.jsonArray
+                ?: resultArray(r, "tracks")
+            if (arr.isEmpty()) NmLog.note("歌单 $id 无歌曲 code=${r.code()}")
+            return enrich(arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
+        } else {
+            get(
+                "/artist/songs", "id" to id.toString(),
+                "limit" to limit.toString(), "offset" to offset.toString(),
+            )
+        }
+        val arr = resultArray(root, "songs")
+        if (arr.isEmpty()) {
+            // 歌手接口可能返回 hotSongs，专辑也可能换字段
+            val alt = resultArray(root, "hotSongs")
+            NmLog.note("songs 为空，hotSongs ${alt.size} 条")
+            return enrich(alt.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
+        }
+        return enrich(arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
+    }
+
+    /** 歌手的专辑列表（分页） */
+    fun artistAlbums(id: Long, limit: Int = 30, offset: Int = 0): List<Group> {
+        val root = get(
+            "/artist/album", "id" to id.toString(),
+            "limit" to limit.toString(), "offset" to offset.toString(),
+        )
+        val arr = resultArray(root, "hotAlbums")
+            .ifEmpty { resultArray(root, "albums") }
+        NmLog.note("歌手专辑 id=$id offset=$offset 返回 ${arr.size} 条")
+        return arr.mapNotNull { o ->
+            val aid = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (aid <= 0L || name.isBlank()) return@mapNotNull null
+            Group(
+                title = name,
+                subtitle = o.obj("artist")?.str("name") ?: o.obj("ar")?.str("name") ?: "",
+                cover = pic(o.str("picUrl", "blurPicUrl", "pic")),
+                songs = emptyList(),
+                album = name,
+                source = SRC_NETEASE,
+                nmId = aid,
+                nmKind = "album",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 榜单 /toplist：id + 名称 + 封面，点进去是该榜单的歌曲 */
+    fun topList(): List<Group> {
+        val root = get("/toplist")
+        val arr = resultArray(root, "list")
+        NmLog.note("榜单返回 ${arr.size} 个")
+        return arr.mapNotNull { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            Group(
+                title = name,
+                subtitle = o.str("updateFrequency") ?: "",
+                cover = pic(o.str("coverImgUrl", "picUrl", "cover")),
+                songs = emptyList(),
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "playlist",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 热门歌手 /top/artists，支持 offset 分页 */
+    fun topArtists(limit: Int = 30, offset: Int = 0): List<Group> {
+        val root = get("/top/artists", "offset" to offset.toString(), "limit" to limit.toString())
+        val arr = resultArray(root, "artists")
+            .ifEmpty { resultArray(root, "list") }
+        NmLog.note("热门歌手 offset=$offset 返回 ${arr.size} 条")
+        return arr.mapNotNull { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            Group(
+                title = name,
+                subtitle = "网易云歌手",
+                cover = pic(o.str("picUrl", "img1v1Url", "pic")),
+                songs = emptyList(),
+                artist = name,
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "artist",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 最新专辑（新碟上架） /album/newest */
+    fun newestAlbums(limit: Int = 30): List<Group> {
+        val root = get("/album/newest")
+        val arr = resultArray(root, "albums")
+        NmLog.note("最新专辑返回 ${arr.size} 条")
+        return arr.take(limit).mapNotNull { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            val ar = o.obj("artist") ?: o.obj("ar")
+            Group(
+                title = name,
+                subtitle = ar?.str("name") ?: "",
+                cover = pic(o.str("picUrl", "blurPicUrl", "pic")),
+                songs = emptyList(),
+                artist = ar?.str("name") ?: "",
+                album = name,
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "album",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 专辑详情：拿歌手名，让专辑页副标题显示真实歌手 */
+    fun albumArtist(id: Long): String? {
+        val root = get("/album", "id" to id.toString())
+        val d = root.obj("album") ?: return null
+        d.obj("artist")?.str("name")?.takeIf { it.isNotBlank() }?.let { return it }
+        val arr = (d["artists"] as? JsonElement)?.jsonArray ?: return null
+        return arr.firstNotNullOfOrNull { (it as? JsonObject)?.str("name")?.takeIf { n -> n.isNotBlank() } }
+    }
+
+    /** 歌手详情：拿歌手自己的头像，避免误用专辑封面 */
+    fun artistDetail(id: Long): Group? {
+        val root = get("/artist/detail", "id" to id.toString())
+        val d = root.obj("data") ?: return null
+        val artist = d.obj("artist") ?: return null
+        val aid = idOf(artist)
+        val name = artist.str("name").orEmpty()
+        if (aid <= 0L || name.isBlank()) return null
+        return Group(
+            title = name,
+            subtitle = "网易云歌手",
+            cover = pic(artist.str("picUrl", "img1v1Url", "cover")),
+            songs = emptyList(),
+            artist = name,
+            source = SRC_NETEASE,
+            nmId = aid,
+            nmKind = "artist",
+        )
+    }
+
+    // ================= 首页 =================
+
+    /** 每日推荐歌曲（需要登录） */
+    fun recommendSongs(refresh: Boolean = false): List<Song> {
+        val r = get(
+            "/recommend/songs/v1",
+            *buildList {
+                if (refresh) add("ispush" to "true")
+            }.toTypedArray(),
+        )
+        val arr = (r.obj("data")?.get("dailySongs") as? JsonElement)?.jsonArray
+            ?: (r["data"] as? JsonElement)?.jsonArray
+            ?: resultArray(r, "dailySongs")
+        if (arr.isEmpty()) NmLog.note("每日推荐无数据 code=${r.code()}")
+        val list = arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } }
+        NmLog.note("每日推荐 ${list.size} 首")
+        return enrich(list)
+    }
+
+    /** 新歌速递：type 0 全部 / 7 华语 / 96 欧美 / 8 日本 / 16 韩国 */
+    fun topSongs(type: Int = 0): List<Song> {
+        val r = get("/top/song", "type" to type.toString())
+        val arr = (r["data"] as? JsonElement)?.jsonArray ?: resultArray(r, "data")
+        if (arr.isEmpty()) NmLog.note("新歌速递无数据 code=${r.code()}")
+        val list = arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } }
+        NmLog.note("新歌速递 ${list.size} 首")
+        return enrich(list)
+    }
+
+    /** 热搜列表（简略）：返回搜索词 */
+    fun hotSearch(): List<String> {
+        val r = get("/search/hot")
+        val arr = ((r.obj("result")?.get("hots") as? JsonElement)?.jsonArray)
+            ?: ((r["hots"] as? JsonElement)?.jsonArray)
+            ?: ((r["data"] as? JsonElement)?.jsonArray)
+            ?: emptyList()
+        val out = arr.mapNotNull { o ->
+            (o as? JsonObject)?.str("first", "searchWord", "name")
+        }
+        if (out.isEmpty()) NmLog.note("热搜无数据 code=${r.code()}")
+        return out
+    }
+
+    /** 热搜列表（详细）：带分数与热度的完整结构，取不到时退回简略版 */
+    fun hotSearchDetail(): List<Pair<String, Int>> {
+        val r = get("/search/hot/detail")
+        val arr = ((r["data"] as? JsonElement)?.jsonArray) ?: emptyList()
+        val out = arr.mapNotNull { o ->
+            val j = o as? JsonObject ?: return@mapNotNull null
+            val w = j.str("searchWord", "name") ?: return@mapNotNull null
+            val score = ((j["score"] as? JsonPrimitive)?.content?.toIntOrNull()) ?: 0
+            w to score
+        }
+        if (out.isEmpty()) NmLog.note("热搜详情无数据，退回简略版")
+        return out.ifEmpty { hotSearch().map { it to 0 } }
+    }
+
+    // ================= 登录 =================
+
+    /** 第一步：取二维码 key */
+    fun qrKey(): String? {
+        val r = get("/login/qr/key")
+        return r.obj("data")?.str("unikey", "key")
+    }
+
+    /** 第二步：取二维码图片（data: URI，可直接交给 Coil） */
+    fun qrImage(key: String): String? {
+        val r = get("/login/qr/create", "key" to key, "qrimg" to "true")
+        val img = r.obj("data")?.str("qrimg") ?: return null
+        return if (img.startsWith("data:")) img else "data:image/png;base64,$img"
+    }
+
+    /** 第三步：轮询。800 过期 801 等待扫码 802 待确认 803 成功 */
+    fun qrCheck(key: String): QrStatus {
+        val r = get("/login/qr/check", "key" to key)
+        // 文档：扫码后返回 502 需加 noCookie=true
+        if (r.code() == 502) {
+            NmLog.note("qr/check 返回 502，改用 noCookie 重试")
+            val r2 = get("/login/qr/check", "key" to key, "noCookie" to "true")
+            val ck2 = r2.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r2)
+            return QrStatus(r2.code(), ck2, r2.str("message"))
+        }
+        val ck = r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
+        return QrStatus(r.code(), ck, r.str("message"))
+    }
+
+    /**
+     * 手机号清洗：只留数字，去掉 +86 / 0086 / 86 前缀与分隔符。
+     * 用户常从通讯录粘贴「+86 138 0013 8000」这样的号码，服务端只认纯数字，
+     * 原样传过去会被判成无效手机号。
+     */
+    private fun cleanPhone(p: String): String {
+        var s = p.filter { it.isDigit() }
+        if (s.startsWith("0086")) s = s.removePrefix("0086")
+        else if (s.startsWith("86") && s.length > 11) s = s.removePrefix("86")
+        return s
+    }
+
+    /**
+     * 登录凭证：优先取响应里的 cookie 字段（/login/cellphone 返回的是一整串
+     * Set-Cookie 文本，setter 会清洗并补 os=pc）。有些部署 cookie 字段缺失，
+     * 但顶层给了 token，用它构造 MUSIC_U 作为兜底，不至于「登录 200 却没登录态」。
+     */
+    private fun cookieOf(r: JsonObject): String? {
+        val raw = r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
+        if (!raw.isNullOrBlank()) return raw
+        val tk = r.str("token")?.takeIf { it.isNotBlank() && it.length > 20 }
+        return tk?.let { "MUSIC_U=$it" }
+    }
+
+    private fun msgOf(r: JsonObject): String? = r.str("message", "msg")
+
+    /** 只有「换取登录凭证」的接口才精简参数；扫码类与 login/status 等仍走常规形式 */
+    private fun isCredentialPath(path: String): Boolean =
+        path == "/login/cellphone" || path == "/register/cellphone" ||
+            path.startsWith("/captcha/")
+
+    /**
+     * 是否命中网易风控。三种形态：
+     * - code -462：易盾滑块，data.url 是验证页，data.verifyToken 是一次性 token
+     * - code 10004 / hitType 800001：「当前登录存在安全风险」，带 redirectUrl
+     * - 顶层直接给了 redirectUrl 或 data 里带 verifyToken
+     */
+    private fun isRisk(r: JsonObject): Boolean {
+        val c = r.code()
+        if (c == -462 || c == 10004) return true
+        if (r.str("redirectUrl")?.startsWith("http") == true) return true
+        val d = r.obj("data") ?: return false
+        return d.containsKey("verifyToken") || d.containsKey("verifyUrl") || d["verifyId"] != null
+    }
+
+    /** 把风控响应解析成可展示的结果：提示文案 + 可打开的验证页 */
+    private fun riskResult(r: JsonObject): LoginResult {
+        val d = r.obj("data")
+        val verify = (d?.str("url") ?: d?.str("verifyUrl") ?: r.str("verifyUrl"))
+            ?.takeIf { it.startsWith("http") }
+        val redirect = r.str("redirectUrl")?.takeIf { it.startsWith("http") }
+        val block = d?.str("blockText")?.trim()?.takeIf { it.isNotBlank() }
+        val msg = msgOf(r) ?: d?.str("message") ?: block
+            ?: "当前登录存在安全风险，请先完成验证后再登录"
+        NmLog.note(
+            "命中网易风控 code=${r.code()} 验证页=${if (verify != null) "有" else "无"} " +
+                "跳转页=${if (redirect != null) "有" else "无"} 提示=$msg",
+        )
+        return LoginResult(
+            code = r.code(), message = msg,
+            verifyUrl = verify, redirectUrl = redirect, risk = true,
+        )
+    }
+
+    /**
+     * 发送短信验证码。返回 null 表示已发送，否则是失败原因。
+     *
+     * /captcha/sent 与 /captcha/sent/v1 都能发，不同部署上可用情况不一样
+     * （有的只认其中一条），所以第一条失败就换另一条再试一次。
+     */
+    fun sendCaptcha(phone: String): LoginResult {
+        val p = cleanPhone(phone)
+        val r1 = get("/captcha/sent", "phone" to p, "ctcode" to "86")
+        if (r1.code() == 200) return LoginResult(sent = true, code = 200)
+        // 风控是确定性结果，重试另一条 sent 接口只会再拿一个新 token，别浪费
+        if (isRisk(r1)) return riskResult(r1)
+        val r2 = get("/captcha/sent/v1", "phone" to p, "ctcode" to "86")
+        if (r2.code() == 200) return LoginResult(sent = true, code = 200)
+        if (isRisk(r2)) return riskResult(r2)
+        return LoginResult(
+            code = r2.code(),
+            message = (msgOf(r2).takeIf { !it.isNullOrBlank() } ?: msgOf(r1))
+                ?: "发送失败（code ${r1.code()}）",
+        )
+    }
+
+    /**
+     * 验证码登录。
+     *
+     * 之前这里多做了一步 /captcha/verify 再登录。该接口属于注册流程，
+     * 调用后会把验证码标记为已核销，紧接着用同一个验证码去
+     * /login/cellphone 就被判失效 —— 这正是「收到验证码却登录不了」的原因。
+     * 正确流程是 /captcha/sent 之后直接 /login/cellphone。
+     */
+    fun loginByCaptcha(phone: String, captcha: String): LoginResult {
+        val p = cleanPhone(phone)
+        val c = captcha.trim()
+        // 按实际可用的调用形式来：/login/cellphone?phone=..&captcha=..&randomCNIP=true
+        // 不带 countrycode（部分部署带 86 反而校验失败），验证码本身就是完整凭据。
+        // randomCNIP 已由 get() 统一追加，登录接口尤其需要它。
+        var r = get("/login/cellphone", "phone" to p, "captcha" to c)
+        // 风控立刻返回：绝不能重试，也不能去 /captcha/verify。
+        // 重试会刷掉刚才那个 verifyToken，verify 还会把验证码核销，
+        // 用户验证完回来反而彻底登不上。
+        if (isRisk(r)) return riskResult(r)
+        var ck = cookieOf(r)
+        if (ck == null) {
+            NmLog.note("验证码登录首轮未拿到凭证（code=${r.code()}），补 countrycode 重试")
+            r = get("/login/cellphone", "phone" to p, "captcha" to c, "countrycode" to "86")
+            if (isRisk(r)) return riskResult(r)
+            ck = cookieOf(r)
+        }
+        val first = LoginResult(ck, r.code(), msgOf(r))
+        if (first.ok) return first
+        // 少数部署要求先 /captcha/verify 再登录（虽然多数会因此核销验证码）
+        val v = get("/captcha/verify", "phone" to p, "captcha" to c, "ctcode" to "86")
+        if (isRisk(v)) return riskResult(v)
+        if (v.code() == 200) {
+            val r2 = get("/login/cellphone", "phone" to p, "captcha" to c)
+            if (isRisk(r2)) return riskResult(r2)
+            val ck2 = cookieOf(r2)
+            if (ck2 != null) return LoginResult(ck2, r2.code(), msgOf(r2))
+        }
+        NmLog.note("验证码登录失败 code=${first.code} msg=${first.message}")
+        return first
+    }
+
+    /** 注册（注册成功即登录） */
+    fun register(phone: String, password: String, captcha: String, nickname: String): LoginResult {
+        val r = get(
+            "/register/cellphone",
+            "phone" to cleanPhone(phone), "password" to password,
+            "captcha" to captcha.trim(), "nickname" to nickname, "countrycode" to "86",
+        )
+        if (isRisk(r)) return riskResult(r)
+        return LoginResult(cookieOf(r), r.code(), msgOf(r))
+    }
+
+    /** 当前登录用户的 uid；取不到返回 0（未登录 / 登录态失效） */
+    fun uid(): Long {
+        if (cookie.isBlank()) return 0L
+        val r = get("/user/account")
+        if (r.code() != 200) return 0L
+        val p = r.obj("profile")
+        val v = (p?.get("userId") as? JsonPrimitive)?.content?.toLongOrNull()
+            ?: (r.obj("account")?.get("id") as? JsonPrimitive)?.content?.toLongOrNull()
+            ?: (r["userId"] as? JsonPrimitive)?.content?.toLongOrNull()
+        NmLog.note("取 uid -> $v")
+        return v ?: 0L
+    }
+
+    /**
+     * 我的网易云歌单（/user/playlist?uid=）。
+     *
+     * 只保留「我创建的」：前面那些是「喜欢的音乐」和收藏的歌单，
+     * 收藏的歌单不属于我，混进来会和本地歌单对不上。
+     * 判断依据是 creator.userId == uid。
+     */
+    fun userPlaylists(uid: Long): List<Group> {
+        if (uid <= 0L) return emptyList()
+        val root = get("/user/playlist", "uid" to uid.toString(), "limit" to "1000", "offset" to "0")
+        val arr = resultArray(root, "playlist")
+        NmLog.note("我的歌单返回 ${arr.size} 个")
+        return arr.mapNotNull { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            val creatorId = (o.obj("creator")?.get("userId") as? JsonPrimitive)?.content?.toLongOrNull()
+            // creator 取不到时不筛（接口偶尔不给），至少不会全丢
+            if (creatorId != null && creatorId != uid) return@mapNotNull null
+            Group(
+                title = name,
+                subtitle = "网易云歌单 · ${o.str("trackCount")?.let { "$it 首" } ?: ""}",
+                cover = pic(o.str("coverImgUrl", "picUrl", "cover")),
+                songs = emptyList(),
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "playlist",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /**
+     * MV 播放地址（/mv/url?id=）。
+     *
+     * 返回的可能是不同分辨率的地址，这里直接取接口给的 url；
+     * 取不到（需要付费 / 已下架 / 未登录）就返回 null，界面提示。
+     */
+    fun mvUrl(mvId: Long): String? {
+        if (mvId <= 0L) return null
+        val r = get("/mv/url", "id" to mvId.toString())
+        val u = r.obj("data")?.str("url") ?: r.str("url")
+        val ok = u?.takeIf { it.startsWith("http") }
+        NmLog.note("取 MV 地址 mv=$mvId -> ${if (ok == null) "无" else "有"}")
+        return ok
+    }
+
+    /**
+     * 这首歌到底有没有 MV（三态）。
+     *
+     * mv 字段非 0 只说明接口给了一个 id，不等于真能播：
+     * MV 下架 / 需要付费 / 地区限制时 /mv/url 是拿不到地址的。
+     * 所以按钮不能只看 mvId，要确认一次。
+     *
+     * 用 getOnce（不重试）判断：拿不到响应说明是网络问题，返回 null 表示
+     * 「无法判断」，调用方不能据此把按钮藏掉。
+     */
+    fun mvExists(mvId: Long): Boolean? {
+        if (mvId <= 0L) return false
+        val r = getOnce("/mv/url", "id" to mvId.toString()) ?: return null
+        // 接口自己报错（不是 200）说明是服务端/网络问题，不能当成「没有 MV」
+        val code = r["code"]?.toString()?.trim('"')?.toIntOrNull()
+        if (code != null && code != 200) return null
+        val u = r.obj("data")?.str("url") ?: r.str("url")
+        return !u.isNullOrBlank() && u.startsWith("http")
+    }
+
+    /**
+     * 往网易云歌单加歌（/playlist/tracks?op=add）。
+     *
+     * 只接受网易云歌曲 id：本站曲库的歌在网易云那边不存在，
+     * 传过去会被忽略或报错，调用方已经先过滤过。
+     */
+    fun playlistAdd(pid: Long, trackIds: List<Long>): Boolean {
+        if (pid <= 0L || trackIds.isEmpty()) return false
+        val r = get(
+            "/playlist/tracks",
+            "op" to "add", "pid" to pid.toString(), "tracks" to trackIds.joinToString(","),
+        )
+        val ok = r.code() == 200
+        NmLog.note("歌单加歌 pid=$pid ids=${trackIds.size} -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
+        return ok
+    }
+
+    /** 从网易云歌单删歌（/playlist/tracks?op=del） */
+    fun playlistDel(pid: Long, trackIds: List<Long>): Boolean {
+        if (pid <= 0L || trackIds.isEmpty()) return false
+        val r = get(
+            "/playlist/tracks",
+            "op" to "del", "pid" to pid.toString(), "tracks" to trackIds.joinToString(","),
+        )
+        val ok = r.code() == 200
+        NmLog.note("歌单删歌 pid=$pid ids=${trackIds.size} -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
+        return ok
+    }
+
+    /** 改网易云歌单名（/playlist/update） */
+    fun playlistRename(pid: Long, name: String): Boolean {
+        if (pid <= 0L || name.isBlank()) return false
+        val r = get("/playlist/update", "id" to pid.toString(), "name" to name)
+        val ok = r.code() == 200
+        NmLog.note("歌单改名 pid=$pid -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
+        return ok
+    }
+
+    /** 用 cookie 换取账号昵称；失败返回 null 表示登录态失效 */
+    fun accountName(): String? {
+        val r = get("/user/account")
+        if (r.code() != 200) return null
+        val p = r.obj("profile")
+        return p?.str("nickname")
+            ?: r.obj("account")?.str("userName")
+            ?: (p?.get("userId") as? JsonPrimitive)?.content
+    }
+
+    /** 登录态是否有效：只看账号信息是否存在，不强制要求 profile */
+    fun loggedIn(): Boolean {
+        if (cookie.isBlank()) return false
+        val r = get("/login/status")
+        val d = r.obj("data")
+        val account = d?.obj("account") ?: r.obj("account") ?: r.obj("profile")
+        val ok = account != null
+        NmLog.note("登录态检查：${if (ok) "有效" else "无效"}")
+        return ok
+    }
+}

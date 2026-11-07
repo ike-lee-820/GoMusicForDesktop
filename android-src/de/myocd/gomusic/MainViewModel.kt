@@ -1,0 +1,2947 @@
+package de.myocd.gomusic
+
+import android.Manifest
+import android.app.Application
+import android.content.ComponentName
+import android.content.Context
+import android.os.Build
+import android.provider.Settings
+import android.os.PowerManager
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.drawable.BitmapDrawable
+import android.net.Uri
+import android.os.Environment
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+
+import androidx.media3.common.Timeline
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import androidx.palette.graphics.Palette
+import coil.imageLoader
+import coil.request.ImageRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.UUID
+
+private const val MODE_LIST_LOOP = 0
+private const val MODE_SHUFFLE = 1
+private const val MODE_REPEAT_ONE = 2
+
+sealed interface Screen {
+    data class Album(val artist: String, val album: String) : Screen
+    data class Artist(val name: String) : Screen
+    data class PlaylistPage(val id: String) : Screen
+    /** 网易云专辑 / 歌手里的歌曲列表 */
+    data class NmSongs(
+        val kind: String,
+        val id: Long,
+        val title: String,
+        val cover: String?,
+        /** 专辑所属歌手（专辑页要显示歌手名） */
+        val artist: String = "",
+    ) : Screen
+    /** MV 播放：整屏视频页 */
+    data class Video(val title: String, val url: String) : Screen
+}
+
+data class Group(
+    val title: String,
+    val subtitle: String,
+    val cover: String?,
+    val songs: List<Song>,
+    val artist: String = "",
+    val album: String = "",
+    /** 曲库来源：[SRC_LOCAL] / [SRC_NETEASE] */
+    val source: String = SRC_LOCAL,
+    val nmId: Long = 0,
+    /** 网易云专辑 / 歌手，用于取歌曲列表 */
+    val nmKind: String = "",
+)
+
+data class PickRequest(val ssids: List<String>, val name: String, val cover: String?)
+data class QueueEntry(val ssid: String, val title: String, val artist: String, val cover: String?)
+
+val DefaultPrimary = Color(0xFFD0BCFF)
+
+/** 下载进度：已下载字节 / 总字节(-1 未知) / 速度(B/s) */
+data class DlStatus(
+    val title: String,
+    val index: Int,
+    val total: Int,
+    val done: Long,
+    val size: Long,
+    val bps: Long,
+) {
+    val percent: Int get() = if (size > 0) (done * 100 / size).toInt().coerceIn(0, 100) else -1
+}
+
+/** 网易云搜索每次请求的条数（翻页步长） */
+const val NM_PAGE_SIZE = 20
+
+class MainViewModel(private val app: Application) : AndroidViewModel(app) {
+    val prefs = Prefs(app)
+
+    // ---------- 界面状态 ----------
+    /** 当前标签：0 歌曲 1 专辑 2 歌手 3 歌单 */
+    var tab by mutableIntStateOf(TAB_HOME); private set
+    /** 二级页面栈 */
+    val stack = mutableStateListOf<Screen>()
+    var query by mutableStateOf("")
+    var showPlayer by mutableStateOf(false)
+    var showLyrics by mutableStateOf(false)
+    var showQueue by mutableStateOf(false)
+    var showSettings by mutableStateOf(false)
+    var showDownloads by mutableStateOf(false)
+    var pickReq by mutableStateOf<PickRequest?>(null)
+    var toastMsg by mutableStateOf<String?>(null); private set
+    /** 播放倍速 */
+    var speed by mutableFloatStateOf(1f); private set
+
+    // ---------- 数据 ----------
+    var songs by mutableStateOf<List<Song>>(emptyList()); private set
+    var artistInfo by mutableStateOf<Map<String, ArtistInfo>>(emptyMap()); private set
+    var loading by mutableStateOf(true); private set
+    var error by mutableStateOf<String?>(null); private set
+    var playlists by mutableStateOf(prefs.playlists); private set
+    var counts by mutableStateOf(prefs.playCounts); private set
+
+    /** 连不上服务器时为 true：只展示已下载内容 */
+    var offline by mutableStateOf(false); private set
+    /** 已下载索引 */
+    var downloads by mutableStateOf(prefs.downloads); private set
+    /** 正在下载的 ssid */
+    var downloading by mutableStateOf<Set<String>>(emptySet()); private set
+
+    /** 当前下载进度（含速度），界面上显示用 */
+    var dlStatus by mutableStateOf<DlStatus?>(null); private set
+
+    /** 已下载 ssid 集合：列表里做 O(1) 判断，避免滑动时逐首线性扫描 */
+    val downloadedIds: Set<String> by derivedStateOf { downloads.mapTo(HashSet()) { it.ssid } }
+
+    // ---------- 设置 ----------
+    /** 设置里指定的主题色，null = 跟随封面 */
+    var fixedTheme by mutableStateOf(prefs.themeColor?.let { Color(it) }); private set
+    /** 跟随封面取到的色 */
+    var coverColor by mutableStateOf<Color?>(null); private set
+    var quality by mutableStateOf(prefs.quality); private set
+    /** 播放模式：0 列表循环 / 1 随机播放 / 2 单曲循环 */
+    var playMode by mutableIntStateOf(prefs.playMode); private set
+    /** 后台播放被打断的策略：[FOCUS_NORMAL] / [FOCUS_CALL_ONLY] / [FOCUS_ALWAYS] */
+    var playFocus by mutableIntStateOf(prefs.playFocus); private set
+    /** 「仅通话暂停」需要电话权限，由 Activity 监听并发起授权 */
+    var needPhonePerm by mutableStateOf(false); private set
+
+    /** 主题色：设置里指定的优先，否则跟随封面取色 */
+    val primary: Color get() = fixedTheme ?: coverColor ?: DefaultPrimary
+
+    /** Activity 用它判断要不要发起电话权限请求，取一次就清掉 */
+    fun consumePhonePerm(): Boolean {
+        if (!needPhonePerm) return false
+        needPhonePerm = false
+        return true
+    }
+
+    /** 网易云登录弹层 */
+    var showNmLogin by mutableStateOf(false); private set
+
+    // ---------- 网易云曲库 ----------
+    /** 是否在设置里开启「接入网易云曲库」 */
+    var nmOn by mutableStateOf(prefs.nmEnabled); private set
+    /** 网易云账号昵称，空 = 未登录（未登录时不使用网易云搜索） */
+    var nmUser by mutableStateOf(prefs.nmAccount.ifBlank { null }); private set
+    /**
+     * 是否已登录并可用。
+     *
+     * 只要求「开关打开 + cookie 存在」，不强求昵称：
+     * /user/account 经常取不到 profile，昵称拿不到就判定未登录的话，
+     * 会出现「明明登录了却不搜索」的情况。
+     */
+    /**
+     * 网易云功能是否可用：只看开关，不再要求已登录。
+     *
+     * 之前要求 cookie 非空才能搜网易云 —— 登录一失败，整个网易云曲库就用不了。
+     * 实际上搜索、取歌、取地址未登录也能用（只是音质档位少一些），
+     * 只有「同步我的歌单 / 我喜欢的音乐」这类个人数据才真的需要登录。
+     */
+    val nmReady: Boolean get() = nmOn
+    var nmSearching by mutableStateOf(false); private set
+    var nmLoadingMore by mutableStateOf(false); private set
+    /** 歌曲是否还有下一页（滑到底继续加载） */
+    var nmHasMore by mutableStateOf(false); private set
+    /** 专辑是否还有下一页 */
+    var nmAlbumsHasMore by mutableStateOf(false); private set
+    /** 歌手是否还有下一页 */
+    var nmArtistsHasMore by mutableStateOf(false); private set
+    /** 搜索代号：切标签/改关键词会自增，旧请求的结果不再生效，避免串扰 */
+    private var nmGen = 0
+    /** 当前搜索关键词与翻页偏移（界面用它判断何时触发加载更多） */
+    private var nmKeyword = ""
+    private var nmOffset = 0
+    private var nmAlbumOffset = 0
+    private var nmArtistOffset = 0
+    val nmKeywordForUi: String get() = nmKeyword
+    val nmOffsetForUi: Int get() = nmOffset
+    var nmSongs by mutableStateOf<List<Song>>(emptyList()); private set
+    var nmAlbums by mutableStateOf<List<Group>>(emptyList()); private set
+    var nmArtists by mutableStateOf<List<Group>>(emptyList()); private set
+    /** 网易云专辑 / 歌手点进去后的歌曲页 */
+    var nmPage by mutableStateOf<Group?>(null); private set
+    var nmPageSongs by mutableStateOf<List<Song>>(emptyList()); private set
+    var nmPageLoading by mutableStateOf(false); private set
+    /** 歌手页的专辑列表（歌手页有「歌曲」「专辑」两栏） */
+    var nmPageAlbums by mutableStateOf<List<Group>>(emptyList()); private set
+    var nmPageAlbumsLoading by mutableStateOf(false); private set
+    /** 歌手页当前分栏：0 歌曲 1 专辑 */
+    var nmPageTab by mutableIntStateOf(0); private set
+    /** 分页偏移与「还有下一页」 */
+    private var nmPageSongOffset = 0
+    private var nmPageAlbumOffset = 0
+    var nmPageSongsHasMore by mutableStateOf(false); private set
+    var nmPageAlbumsHasMore by mutableStateOf(false); private set
+    var nmPageLoadingMore by mutableStateOf(false); private set
+    /** 页头封面（歌手页用歌手自己的头像，不用专辑封面） */
+    var nmPageCover by mutableStateOf<String?>(null); private set
+    /** 详情页内容缓存：kind/id -> (歌曲, 专辑)，返回上层时直接复用，不再重复请求 */
+    private val nmPageCache = java.util.concurrent.ConcurrentHashMap<String, Pair<List<Song>, List<Group>>>()
+    /** 页头副标题：专辑显示歌手名，歌手显示「网易云歌手」 */
+    var nmPageSubtitle by mutableStateOf(""); private set
+    /** 播放历史（最近在前） */
+    var history by mutableStateOf(prefs.history); private set
+    /** 歌曲信息快照（含网易云），保证历史随时能显示歌名 */
+    var snapshots: Map<String, Song> by mutableStateOf<Map<String, Song>>(prefs.songSnapshots); private set
+
+    val historySongs: List<Song> by derivedStateOf {
+        val m = songMap
+        val nm = nmSongs.associateBy { it.ssid }
+        // nmKnown 是累积的网易云歌曲：切界面后 nmSongs 会被清空，
+        // 只查 nmSongs 会让历史里的网易云歌曲查不到 —— 之前就是这样丢的
+        val known = nmKnown.toMap()
+        val sn = snapshots
+        val dl = downloads.associateBy { it.ssid }
+        history.mapNotNull { id: String ->
+            val s: Song? = m[id] ?: nm[id] ?: known[id] ?: sn[id] ?: dl[id]?.let {
+                Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null })
+            }
+            s
+        }
+    }
+
+    /** 记录歌曲快照：播放 / 搜索命中时调用，让历史与界面随时能查到 */
+    fun rememberSongs(list: List<Song>, force: Boolean = false) {
+        if (list.isEmpty()) return
+        val cur = LinkedHashMap<String, Song>(snapshots)
+        var changed = false
+        for (s in list) {
+            if (s.title.isBlank()) continue
+            val old = cur[s.ssid]
+            // 有更完整信息（有封面 / 有专辑）就覆盖。
+            // force 是导入歌单专用：还原字符带来的才是这首歌该显示的信息，
+            // 旧快照里同 ssid 的记录可能是别的专辑/歌手，不覆盖就会串歌。
+            if (force || old == null || (old.coverUrl.isNullOrBlank() && !s.coverUrl.isNullOrBlank())) {
+                cur.remove(s.ssid) // 重新插到末尾，保持「最近」顺序
+                cur[s.ssid] = s
+                changed = true
+            }
+        }
+        if (changed) {
+            // 限制容量，避免 Prefs 无限增长
+            while (cur.size > MAX_SNAPSHOTS) {
+                val first = cur.keys.firstOrNull() ?: break
+                cur.remove(first)
+            }
+            snapshots = cur
+            prefs.songSnapshots = cur
+        }
+    }
+    private var nmJob: Job? = null
+    private var qrJob: Job? = null
+    /** 二维码登录：二维码图片（data: URI）与提示文案 */
+    var nmQr by mutableStateOf<String?>(null); private set
+    var nmQrTip by mutableStateOf("正在获取二维码"); private set
+    var nmBusy by mutableStateOf(false); private set
+
+    fun startQrLogin() {
+        qrJob?.cancel()
+        nmQr = null
+        nmQrTip = "正在获取二维码"
+        qrJob = viewModelScope.launch(Dispatchers.IO) {
+            val key = runCatching { Netease.qrKey() }.getOrNull()
+            if (key.isNullOrBlank()) {
+                withContext(Dispatchers.Main) { nmQrTip = "获取二维码失败，请检查网络" }
+                return@launch
+            }
+            val img = runCatching { Netease.qrImage(key) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                nmQr = img
+                nmQrTip = if (img == null) "获取二维码失败" else "用网易云音乐 App 扫码"
+            }
+            if (img == null) return@launch
+            while (true) {
+                delay(1500)
+                val st = runCatching { Netease.qrCheck(key) }.getOrNull() ?: continue
+                when (st.code) {
+                    803 -> {
+                        // 授权成功：拿到凭证就立刻写入，不再依赖后续刷新
+                        val ck = st.cookie
+                        withContext(Dispatchers.Main) {
+                            if (ck.isNullOrBlank()) {
+                                nmQrTip = "授权完成但未拿到登录凭证，请重新扫码"
+                                toast("登录未完成，请重新扫码")
+                            } else {
+                                nmQr = null
+                                nmLogin(ck, null)
+                            }
+                        }
+                        return@launch
+                    }
+                    800 -> {
+                        withContext(Dispatchers.Main) { nmQrTip = "二维码已过期，点此重新获取" }
+                        return@launch
+                    }
+                    802 -> withContext(Dispatchers.Main) { nmQrTip = "已扫码，请在手机上确认" }
+                    801 -> withContext(Dispatchers.Main) { nmQrTip = "用网易云音乐 App 扫码" }
+                }
+            }
+        }
+    }
+
+    fun stopQrLogin() {
+        qrJob?.cancel()
+        nmQr = null
+    }
+
+    /**
+     * 网易风控：需要用户在浏览器完成安全验证后才能继续登录。
+     * 非空时登录弹层会显示提示卡片和「打开验证页」按钮。
+     */
+    var nmRiskTip by mutableStateOf(""); private set
+    var nmRiskUrl by mutableStateOf<String?>(null); private set
+
+    fun clearNmRisk() { nmRiskTip = ""; nmRiskUrl = null }
+
+    /** 命中风控：明确提示 + 给出验证页入口，并保持登录弹层打开 */
+    private fun showNmRisk(r: LoginResult) {
+        nmRiskUrl = r.verifyUrl ?: r.redirectUrl
+        nmRiskTip = (r.message?.takeIf { it.isNotBlank() })
+            ?: "当前登录存在安全风险，请先完成验证后再登录"
+        showNmLogin = true
+        toast(nmRiskTip)
+        NmLog.note("登录风控提示：${nmRiskTip}（验证页=${if (nmRiskUrl != null) "有" else "无"}）")
+    }
+
+    /** 用外部浏览器打开验证页（易盾滑块在真实浏览器里才能正常完成） */
+    fun openNmVerify() {
+        val u = nmRiskUrl ?: return
+        val i = Intent(Intent.ACTION_VIEW, Uri.parse(u)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { app.startActivity(i) }
+            .onFailure { toast("无法打开验证页：${it.message}") }
+    }
+
+    /** 复制链接：方便在电脑浏览器里完成验证 */
+    fun copyNmVerify() {
+        val u = nmRiskUrl ?: return
+        val cm = app.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("网易云验证页", u))
+        toast("验证链接已复制")
+    }
+
+    /** 发送短信验证码 */
+    fun nmSendCode(phone: String) {
+        if (phone.isBlank()) { toast("请填写手机号"); return }
+        nmBusy = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = runCatching { Netease.sendCaptcha(phone) }
+                .getOrElse { e -> LoginResult(message = e.message ?: "网络异常") }
+            withContext(Dispatchers.Main) {
+                nmBusy = false
+                when {
+                    r.sent -> { clearNmRisk(); toast("验证码已发送") }
+                    r.blocked -> showNmRisk(r)
+                    else -> toast("发送失败：${r.message ?: "请稍后再试"}")
+                }
+            }
+        }
+    }
+
+    /**
+     * 验证码登录；填了昵称则走注册。
+     *
+     * 不再先调 /captcha/verify：那一步会把验证码核销掉，
+     * 导致紧接着的登录拿到一个已经失效的验证码。
+     */
+    fun nmLoginPhone(phone: String, code: String, password: String, nickname: String) {
+        if (phone.isBlank() || code.isBlank()) { toast("请填写手机号与验证码"); return }
+        if (nickname.isNotBlank() && password.isBlank()) { toast("注册请填写密码"); return }
+        if (nmBusy) return
+        nmBusy = true
+        viewModelScope.launch {
+            // 整体超时：Netease.get 内部会重试多次且间隔递增，
+            // 服务端不响应时总耗时可能到十几秒，卡在那里界面像没反应。
+            // 到点就中断并提示，绝不让按钮一直转圈
+            val r = withTimeoutOrNull(20_000) {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        if (nickname.isBlank()) Netease.loginByCaptcha(phone, code)
+                        else Netease.register(phone, password, code, nickname)
+                    }.getOrNull()
+                }
+            }
+            nmBusy = false
+            when {
+                r == null -> toast("登录超时或网络异常，请稍后再试")
+                r.ok -> { clearNmRisk(); nmLogin(r.cookie!!, null) }
+                // 风控必须显式提示并可跳转验证页，不能只 toast 一句就算了
+                r.blocked -> showNmRisk(r)
+                else -> {
+                    clearNmRisk()
+                    val m = r.message?.takeIf { it.isNotBlank() }
+                    toast(if (m != null) "登录失败：$m" else "登录失败（code ${r.code}）")
+                    NmLog.note("验证码登录失败 code=${r.code} msg=${r.message}")
+                }
+            }
+        }
+    }
+
+    // ---------- 播放状态 ----------
+    var controller: MediaController? = null
+        private set
+    var curSsid by mutableStateOf<String?>(null); private set
+    var curIndex by mutableIntStateOf(0); private set
+    var isPlaying by mutableStateOf(false); private set
+    var positionMs by mutableLongStateOf(0L); private set
+    var durationMs by mutableLongStateOf(0L); private set
+    var queue by mutableStateOf<List<QueueEntry>>(emptyList()); private set
+    var lyric by mutableStateOf<List<LrcLine>>(emptyList()); private set
+    /** 歌词是否正在加载：UI 据此显示「正在加载」，而不是过早显示「暂无歌词」 */
+    var lyricLoading by mutableStateOf(false); private set
+
+    /**
+     * 取歌词的超时（毫秒）。
+     *
+     * 之前没有超时：接口慢或重试退避时会一直卡在「正在加载歌词…」，
+     * 明明这首歌没有歌词，界面却长时间不显示「暂无歌词」。
+     * 超时就按「拿不到」处理，直接显示「暂无歌词」。
+     */
+    private val lyricTimeoutMs = 8_000L
+    /** 当前歌词属于哪首歌：切音质会重新 replaceMediaItem，但歌词不用重取 */
+    private var lyricSsid: String? = null
+    /** 上一次歌词加载任务：切歌时取消，避免旧任务回来写脏数据 */
+    private var lyricJob: Job? = null
+    /** 正在为哪一首加载歌词（与 lyricSsid 分开：后者是「已加载好」的那首） */
+    private var lyricLoadingFor: String? = null
+    var qualities by mutableStateOf<List<String>>(emptyList()); private set
+    /** 确认没有音源的档位：菜单里置灰。请求失败没探出来的不算在内 */
+    var qualitiesAbsent by mutableStateOf<Set<String>>(emptySet()); private set
+
+    /** 网易云歌曲不在 songs 里，出现过就记一份，播放页/歌词才能取到 */
+    private val nmKnown = java.util.concurrent.ConcurrentHashMap<String, Song>()
+    private fun keepNetease(l: List<Song>) {
+        val nm = l.filter { it.source == SRC_NETEASE }
+        if (nm.isEmpty()) return
+        nm.forEach { nmKnown[it.ssid] = it }
+        // 同时落一份快照（持久化），这样切界面 / 重启后历史仍能查到
+        rememberSongs(nm)
+    }
+    /** 当前播放队列（按 ssid 索引）：播放器显示的歌必须是队列里那一条 */
+    var queueSongs: Map<String, Song> by mutableStateOf(emptyMap()); private set
+
+    /**
+     * 当前正在播放的歌。
+     *
+     * 优先取播放队列里的那一条 —— 还原字符导入的歌单经常不在主曲库
+     * （songs / songMap）里，只查 songMap 会拿到碰巧同 ssid 的另一条记录，
+     * 于是播放器上的歌手 / 专辑名对了，点进去却跳到不相干的专辑页。
+     * 找不到再依次退回主曲库、网易云缓存、快照、下载记录。
+     */
+    val currentSong: Song? by derivedStateOf {
+        val id = curSsid ?: return@derivedStateOf null
+        val base = queueSongs[id]
+            ?: songMap[id]
+            ?: nmKnown[id]
+            ?: snapshots[id]
+            ?: downloads.firstOrNull { it.ssid == id }?.let {
+                Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null })
+            }
+            ?: return@derivedStateOf null
+        // 详情接口后来补全的 id 类字段，补回队列里的那条，保证跳转精准
+        val full = nmKnown[id] ?: return@derivedStateOf base
+        base.copy(
+            nmId = base.nmId.takeIf { it > 0 } ?: full.nmId,
+            nmAlbumId = base.nmAlbumId.takeIf { it > 0 } ?: full.nmAlbumId,
+            nmArtistId = base.nmArtistId.takeIf { it > 0 } ?: full.nmArtistId,
+            mvId = base.mvId.takeIf { it > 0 } ?: full.mvId,
+            coverUrl = base.coverUrl ?: full.coverUrl,
+            source = if (base.source == SRC_LOCAL && full.source == SRC_NETEASE) SRC_NETEASE else base.source,
+        )
+    }
+
+    // ---- MV 可用性：只有确认拿得到地址才显示按钮 ----
+    /** ssid -> 有没有 MV（确认过的才在表里） */
+    private val mvOk = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    /** 正在确认的歌，避免同一首重复请求 */
+    private val mvProbing = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+    /** 确认结果回来了要触发一次重组 */
+    var mvVersion by mutableStateOf(0); private set
+
+    /**
+     * 确认这首歌有没有 MV，结果按歌缓存（同一首只问一次）。
+     *
+     * 只有接口明确说「拿不到地址」才算没有 MV；请求失败（离线 / 网络抖动）
+     * 判断不了，按「有」处理，不会因为一次抖动就把按钮永久藏掉。
+     */
+    fun probeMv(s: Song?) {
+        val id = s?.mvId ?: return
+        val k = s!!.ssid
+        if (id <= 0L || mvOk.containsKey(k) || !mvProbing.add(k)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = Netease.mvExists(id)
+            withContext(Dispatchers.Main) {
+                // 判断不了（网络/接口出错）就按「有」显示：
+                // 不能因为一次抖动就把按钮永久藏掉
+                mvOk[k] = ok ?: true
+                mvVersion++
+                mvProbing.remove(k)
+            }
+        }
+    }
+
+    /**
+     * MV 按钮能不能显示。
+     *
+     * mvId > 0 只是「接口给了一个 id」，很多歌的 MV 已经下架或需要付费，
+     * 点了也放不出来。所以必须 [probeMv] 确认过才显示；没确认前先不显示，
+     * 免得没有 MV 的歌也冒出按钮。
+     */
+    fun mvAvailable(s: Song?): Boolean {
+        mvVersion // 读一次：确认结果回来时这里会重新算
+        val id = s?.mvId ?: return false
+        if (id <= 0L) return false
+        return mvOk[s!!.ssid] ?: false
+    }
+    // ===================================================================
+    // 歌词翻译
+    // ===================================================================
+    /**
+     * 译文缓存：ssid -> 按逻辑行对齐的译文。
+     * 必须是 state：换掉它要让上面那些 derivedState 重新算，普通字段不会。
+     */
+    private var transCache by mutableStateOf(prefs.lyricTrans)
+
+    /** 是否显示译文：已经有译文后再点翻译按钮就是切换显示 */
+    var showTrans by mutableStateOf(true); private set
+
+    /** 正在翻译整篇 */
+    var transLoading by mutableStateOf(false); private set
+
+    /** 当前歌词整理后的逻辑行（自带翻译的歌词会把原文与译文并成一行）。
+     *  名字不能叫 buildLyricRows：那是 Data.kt 里造这个列表的函数。 */
+    val lyricRows: List<LyricRow> by derivedStateOf {
+        val raw = lyric
+        if (raw.isEmpty()) emptyList() else buildLyricRows(raw, transCache[curSsid])
+    }
+
+    /** 当前句落在哪个逻辑行：播放位置是按原始行算的，这里换算一次 */
+    val lyricRowIndex: Int by derivedStateOf {
+        val i = lyricIndex
+        if (i < 0) -1 else lyricRows.indexOfFirst { it.index == i }
+    }
+
+    /** 歌词里有非中文才给翻译按钮（中文歌不需要） */
+    val lyricNeedTrans: Boolean by derivedStateOf { lyricNeedsTranslation(lyricRows) }
+
+    /** 是否已经译过：自带译文，或已经翻过并写进了缓存 */
+    val lyricHasTrans: Boolean by derivedStateOf { lyricRows.any { !it.trans.isNullOrBlank() } }
+
+    /**
+     * 翻译当前歌词。
+     *
+     * 点一次就并发翻完整篇并缓存（接口没有频率限制，不用一句一句等）。
+     * 已经有译文时不发请求，改成切换译文的显示 —— 按钮这时不该重复翻译。
+     */
+    /**
+     * 需要翻译的行（只含正文段里真正带外文的行）。
+     *
+     * 纯中文的句子不在里面：它们不需要译文，也不提交给 AI
+     * —— 否则 AI 会把中文句原样回一遍，界面上就多出一行没用的译文。
+     */
+    val lyricTransTargets: Set<Int> by derivedStateOf { computeTransTargets(lyricRows) }
+
+    fun translateLyric() {
+        val rows = lyricRows
+        val id = curSsid ?: return
+        if (rows.isEmpty()) { toast("暂无歌词"); return }
+        if (rows.any { !it.trans.isNullOrBlank() }) { showTrans = !showTrans; return }
+        if (transLoading) return
+        // 只翻译正文段里含外文的行；纯中文行留空，不显示译文
+        val order = lyricTransTargets.sorted()
+        if (order.isEmpty()) { toast("歌词已是中文，无需翻译"); return }
+        transLoading = true
+        viewModelScope.launch {
+            val sub = order.map { rows[it].text }
+            val got = Translate.all(sub)
+            val res = MutableList(rows.size) { "" }
+            got.forEachIndexed { k, v -> if (k < order.size) res[order[k]] = v }
+            transLoading = false
+            if (res.all { it.isBlank() }) { toast("翻译失败，请检查网络"); return@launch }
+            transCache = transCache + (id to res)
+            prefs.lyricTrans = transCache
+            // 翻的过程中可能已经切歌了：缓存照存，但不要改动当前显示
+            if (curSsid == id) {
+                showTrans = true
+                toast("已翻译 ${res.count { it.isNotBlank() }}/${order.size} 句")
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // 下载时补译文 / 离线播放时调取
+    // -------------------------------------------------------------------
+    /** 多批下载并行时，翻译任务串行跑，避免同时打一堆 AI 请求 */
+    private val transMutex = Mutex()
+
+    /**
+     * 播放一首歌时：缓存里没有译文就从随下载保存的文件里调回来。
+     *
+     * 译文缓存放在应用缓存目录，系统「清除缓存」会清掉；下载目录里那份
+     * 是跟着歌曲一起保存的，离线播放或清过缓存后都还能显示。
+     */
+    private fun loadLocalTransIfNeeded(id: String) {
+        if (transCache[id]?.any { it.isNotBlank() } == true) return
+        val ref = downloads.firstOrNull { it.ssid == id && it.trans.isNotBlank() }?.trans
+            ?: return
+        viewModelScope.launch {
+            val lines = withContext(Dispatchers.IO) { LocalLib.readTrans(app, ref) }
+            if (lines.any { it.isNotBlank() } &&
+                transCache[id]?.any { it.isNotBlank() } != true
+            ) {
+                transCache = transCache + (id to lines)
+                prefs.lyricTrans = transCache
+                NmLog.note("已从下载文件调取译文：$id")
+            }
+        }
+    }
+
+    /** 一批下载结束后统一补译文（不阻塞下载队列本身） */
+    private suspend fun ensureTranslations(done: List<Pair<Song, DownloadRecord>>) {
+        transMutex.withLock {
+            done.forEach { (s, rec) ->
+                // 不能用 runCatching：它的 block 不是 suspend，里面调不了协程函数
+                try {
+                    ensureTranslated(s, rec)
+                } catch (e: Exception) {
+                    NmLog.note("下载补译文失败：${s.ssid} ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * 下载一首歌后：能拿到译文就默认获取，并随下载一起保存。
+     *
+     * 「已经获取时跳过」有两层：
+     * - 下载目录里已有译文文件 → 不再获取，只把引用和缓存补齐；
+     * - 缓存里已有译文（之前点过翻译按钮）→ 不再请求接口，但仍写进下载目录。
+     *
+     * 歌词自带译文（同时间戳双行）本来就在 .lrc 里，天然随下载保存；
+     * 纯中文歌 / 外语句子不足 10% 的也不去麻烦 AI。
+     */
+    private suspend fun ensureTranslated(s: Song, rec: DownloadRecord) {
+        val id = s.ssid
+        // 1. 已有译文文件：跳过获取
+        val existing = prefs.downloads.firstOrNull { it.ssid == id && it.trans.isNotBlank() }
+        if (existing != null) {
+            val lines = withContext(Dispatchers.IO) { LocalLib.readTrans(app, existing.trans) }
+            withContext(Dispatchers.Main) {
+                // 同一首歌每个音质记录都记同一个引用：删到只剩一条才删文件
+                val l = prefs.downloads.map {
+                    if (it.ssid == id) it.copy(trans = existing.trans) else it
+                }
+                prefs.downloads = l
+                downloads = l
+                if (lines.any { it.isNotBlank() } &&
+                    transCache[id]?.any { it.isNotBlank() } != true
+                ) {
+                    transCache = transCache + (id to lines)
+                    prefs.lyricTrans = transCache
+                }
+            }
+            return
+        }
+        // 2. 缓存里已有译文：跳过接口请求，但照样一起保存
+        val cached = transCache[id]?.takeIf { it.any { v -> v.isNotBlank() } }
+        if (cached != null) { saveTrans(id, s, cached); return }
+        // 3. 取歌词（以随下载保存的那份为准，保证离线时行序一致）
+        var lrc = withContext(Dispatchers.IO) { LocalLib.readText(app, rec.lyric) }
+        if (lrc.isBlank()) {
+            lrc = withContext(Dispatchers.IO) {
+                val nid = neteaseIdOf(id)
+                if (nid != null) runCatching { Netease.lyric(nid) }.getOrDefault("")
+                else runCatching { Api.lyrics(id) }.getOrDefault("")
+            }
+        }
+        if (lrc.isBlank()) return
+        val rows = buildLyricRows(lyricLines(lrc))
+        if (rows.any { !it.trans.isNullOrBlank() }) return  // 歌词自带译文
+        if (!lyricNeedsTranslation(rows)) return            // 纯中文 / 外文太少
+        val order = computeTransTargets(rows).sorted()
+        if (order.isEmpty()) return
+        val got = Translate.all(order.map { rows[it].text })
+        val res = MutableList(rows.size) { "" }
+        got.forEachIndexed { k, v -> if (k < order.size) res[order[k]] = v }
+        // 翻不出来就不保存 —— 「可以获取翻译」时才一起保存
+        if (res.all { it.isBlank() }) return
+        saveTrans(id, s, res)
+    }
+
+    /** 把译文写进下载目录，并更新记录与缓存（在线播放也能立刻用） */
+    private suspend fun saveTrans(id: String, s: Song, lines: List<String>) {
+        val ref = withContext(Dispatchers.IO) { LocalLib.writeTrans(app, s, lines) }
+        if (ref.isBlank()) return
+        withContext(Dispatchers.Main) {
+            val l = prefs.downloads.map { if (it.ssid == id) it.copy(trans = ref) else it }
+            prefs.downloads = l
+            downloads = l
+            transCache = transCache + (id to lines)
+            prefs.lyricTrans = transCache
+        }
+        NmLog.note("译文已随下载保存：$id（${lines.count { it.isNotBlank() }} 句）")
+    }
+
+    val lyricIndex: Int by derivedStateOf {
+        if (lyric.isEmpty() || lyric[0].timeMs < 0) -1
+        else lyric.indexOfLast { it.timeMs <= positionMs }
+    }
+
+    private var pendingLink: Uri? = null
+    private var afterConnect: (() -> Unit)? = null
+    private var toastJob: Job? = null
+    private var pendingFocus: Int? = null
+
+    // ================= 加载 =================
+    /** 把异常翻译成人能看懂的提示 */
+    private fun netMsg(e: Throwable): String {
+        val m = e.message ?: ""
+        return when {
+            m.contains("Software caused connection abort", true) ||
+                m.contains("ECONNABORTED", true) ||
+                m.contains("Connection reset", true) ||
+                m.contains("Connection timed out", true) ||
+                m.contains("timeout", true) -> "连接服务器超时（网络不稳定），已进入离线模式"
+            m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true) -> "无法解析服务器地址，已进入离线模式"
+            m.contains("Failed to connect", true) || m.contains("ECONNREFUSED", true) -> "无法连接服务器，已进入离线模式"
+            m.contains("SocketTimeout", true) || m.contains("timed out", true) -> "连接服务器超时，已进入离线模式"
+            m.startsWith("HTTP ") -> "服务器返回 $m"
+            else -> "加载失败：$m"
+        }
+    }
+
+    fun load() {
+        viewModelScope.launch {
+            loading = true
+            error = null
+            var ok = false
+            // 只尝试一次：失败立即进入离线模式，不重试、不退避等待
+            try {
+                songs = withContext(Dispatchers.IO) {
+                    // 列表没给封面时，按文档用仓库里的「专辑名/cover.webp」兜底
+                    Api.songs(quick = true).map {
+                        if (it.coverUrl.isNullOrBlank()) it.copy(coverUrl = guessCoverUrl(it)) else it
+                    }
+                }
+                ok = true
+            } catch (e: Exception) {
+                error = netMsg(e)
+            }
+            if (ok) {
+                offline = false
+                error = null
+            } else {
+                // 进入离线模式：用已下载的内容填充
+                offline = true
+                songs = LocalLib.songs(prefs.downloads)
+            }
+            loading = false
+            if (!offline) {
+                runCatching { artistInfo = withContext(Dispatchers.IO) { Api.artists() } }
+            }
+            pendingLink?.let { pendingLink = null; handleLink(it) }
+        }
+    }
+
+    /** 设置里手动重连 */
+    fun reconnect() = load()
+
+
+
+
+
+
+    // ================= 网易云曲库 =================
+    init { Netease.cookie = prefs.nmCookie }
+
+    fun setNmEnabled(on: Boolean) {
+        nmOn = on
+        prefs.nmEnabled = on
+        Netease.cookie = prefs.nmCookie
+        if (!on) {
+            nmSongs = emptyList()
+            nmAlbums = emptyList()
+            nmArtists = emptyList()
+        } else if (nmUser.isNullOrBlank()) {
+            showNmLogin = true
+        } else {
+            refreshNmAccount()
+        }
+    }
+
+    /** 打开/关闭登录弹层 */
+    fun setNmLogin(v: Boolean) { showNmLogin = v }
+
+    /** 登录成功：保存 cookie 与昵称 */
+    fun nmLogin(cookie: String, name: String?) {
+        if (cookie.isBlank()) {
+            toast("登录失败：没有拿到登录凭证，请重新扫码")
+            return
+        }
+        // 先交给 Netease 清洗（去掉 Set-Cookie 属性、去重、补 os=pc），
+        // 再把干净的那份持久化：以前直接存原始串，重启后 cookie 里混着
+        // Max-Age / Path，请求会被判无效，高音质也拿不到。
+        Netease.cookie = cookie
+        prefs.nmCookie = Netease.cookie
+        homeLoaded = false
+        showNmLogin = false
+        viewModelScope.launch(Dispatchers.IO) {
+            val n = name?.takeIf { it.isNotBlank() }
+                ?: runCatching { Netease.accountName() }.getOrNull()
+                ?: "网易云用户"
+            prefs.nmAccount = n
+            withContext(Dispatchers.Main) {
+                nmUser = n
+                toast("已登录网易云：$n")
+            }
+        }
+    }
+
+    fun nmLogout() {
+        prefs.nmCookie = ""
+        prefs.nmAccount = ""
+        Netease.cookie = ""
+        homeLoaded = false
+        nmUser = null
+        nmSongs = emptyList()
+        nmAlbums = emptyList()
+        nmArtists = emptyList()
+        toast("已退出网易云")
+    }
+
+    /** 校验登录态，失效则清空 */
+    fun refreshNmAccount() {
+        if (!nmOn) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { Netease.loggedIn() }.getOrDefault(false)
+            val name = if (ok) prefs.nmAccount.takeIf { it.isNotBlank() }
+                ?: runCatching { Netease.accountName() }.getOrNull() else null
+            withContext(Dispatchers.Main) {
+                if (!ok || name.isNullOrBlank()) {
+                    // 登录态失效：保留 cookie，只标记为未登录，用户重新登录后沿用
+                    prefs.nmAccount = ""
+                    nmUser = null
+                    if (!ok && prefs.nmCookie.isNotBlank()) {
+                        toast("网易云登录已失效，请重新登录")
+                    }
+                } else {
+                    prefs.nmAccount = name
+                    nmUser = name
+                }
+            }
+        }
+    }
+
+    /**
+     * 切标签 / 进出二级页时调用：取消正在进行的网易云搜索。
+     * 之前在搜索中途切界面会因为结果回来后列表重组而闪退。
+     */
+    fun cancelNeteaseSearch() {
+        nmJob?.cancel()
+        nmJob = null
+        nmSearching = false
+    }
+
+    /** 切换底部标签 */
+    fun chooseTab(t: Int) {
+        // 不再在这里取消搜索：切标签后每个标签的 LaunchedEffect 会以 tab 为 key
+        // 重新发起一次搜索，提前取消会导致新标签搜不到结果
+        nmPage = null
+        nmPageSongs = emptyList()
+        tab = t
+        if (t == TAB_HOME) loadHome()
+    }
+
+    /** 搜索网易云（防抖）。未开启或未登录时直接清空，不发请求 */
+    fun searchNetease(q: String) {
+        nmJob?.cancel()
+        val kw = q.trim()
+        NmLog.note("searchNetease 调用：kw=$kw nmReady=$nmReady")
+        nmKeyword = kw
+        nmOffset = 0
+        nmAlbumOffset = 0
+        nmArtistOffset = 0
+        nmHasMore = false
+        nmAlbumsHasMore = false
+        nmArtistsHasMore = false
+        if (!nmReady || kw.isEmpty()) {
+            nmSearching = false
+            nmLoadingMore = false
+            nmSongs = emptyList()
+            nmAlbums = emptyList()
+            nmArtists = emptyList()
+            return
+        }
+        val gen = ++nmGen
+        // 立刻置为搜索中：让大加载动画马上出来，不用等防抖
+        nmSearching = true
+        nmJob = viewModelScope.launch {
+            try {
+                delay(400)
+                // 只搜当前标签需要的那一类：三个类型各发一次请求（还要各自补详情）
+                // 是搜索慢的主因，这里按 tab 只发一路。
+                val kind = when (tab) {
+                    TAB_ALBUMS -> 1
+                    TAB_ARTISTS -> 2
+                    else -> 0
+                }
+                NmLog.note("按标签搜索 kind=$kind kw=$kw")
+                var s: List<Song> = emptyList()
+                var a: List<Group> = emptyList()
+                var ar: List<Group> = emptyList()
+                when (kind) {
+                    1 -> a = withContext(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, 0) }
+                        .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                    2 -> ar = withContext(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, 0) }
+                        .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                    else -> s = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, 0) }
+                        .distinctBy { it.ssid }
+                }
+                // 分类型记日志：便于确认到底是哪一路没返回
+                NmLog.note("分类型结果：歌曲=" + s.size + " 专辑=" + a.size + " 歌手=" + ar.size + "（kw=$kw）")
+                // 关键词或代号变了说明已经切走，丢弃这批结果
+                if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
+                keepNetease(s)
+                // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
+                val c = counts
+                when (kind) {
+                    1 -> {
+                        nmAlbums = a
+                        nmSongs = emptyList()
+                        nmArtists = emptyList()
+                    }
+                    2 -> {
+                        nmArtists = ar
+                        nmSongs = emptyList()
+                        nmAlbums = emptyList()
+                    }
+                    else -> {
+                        nmSongs = s.sortedByDescending { c[it.ssid] ?: 0 }
+                        nmAlbums = emptyList()
+                        nmArtists = emptyList()
+                    }
+                }
+                nmOffset = NM_PAGE_SIZE
+                nmAlbumOffset = NM_PAGE_SIZE
+                nmArtistOffset = NM_PAGE_SIZE
+                when (kind) {
+                    1 -> nmAlbumsHasMore = a.size >= NM_PAGE_SIZE
+                    2 -> nmArtistsHasMore = ar.size >= NM_PAGE_SIZE
+                    else -> nmHasMore = s.size >= NM_PAGE_SIZE
+                }
+                NmLog.note("搜索完成：歌曲 " + s.size + " / 专辑 " + a.size + " / 歌手 " + ar.size)
+                if (s.isEmpty() && a.isEmpty() && ar.isEmpty()) {
+                    NmLog.note("网易云三条搜索都为空，请检查登录态与关键词")
+                }
+            } catch (e: Throwable) {
+                // 切界面导致的取消属于正常行为，不提示、不报错
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                NmLog.err("searchNetease($kw)", e)
+                if (gen == nmGen) {
+                    nmSongs = emptyList()
+                    nmAlbums = emptyList()
+                    nmArtists = emptyList()
+                    toast("网易云搜索失败：" + (e.message?.take(40) ?: ""))
+                }
+            } finally {
+                // 只有当前这一代搜索才能收起加载态，避免旧任务把新搜索的加载态清掉
+                if (gen == nmGen) nmSearching = false
+            }
+        }
+    }
+
+    /**
+     * 列表滑到底时向网易云请求下一页。
+     * [kind]：0 歌曲 1 专辑 2 歌手，各自维护偏移量。
+     */
+    fun loadMoreNetease(kind: Int = 0) {
+        val kw = nmKeyword
+        if (kw.isBlank() || !nmReady || nmLoadingMore) return
+        val off = when (kind) {
+            1 -> nmAlbumOffset
+            2 -> nmArtistOffset
+            else -> nmOffset
+        }
+        val hasMore = when (kind) {
+            1 -> nmAlbumsHasMore
+            2 -> nmArtistsHasMore
+            else -> nmHasMore
+        }
+        if (!hasMore) return
+        // 上一页还没回来就不再发，避免重复请求同一页
+        if (nmLoadingMore) return
+        nmLoadingMore = true
+        val gen = nmGen
+        NmLog.note("翻页开始 kind=$kind offset=$off kw=$kw")
+        // 用独立协程：不占用搜索的 nmJob，避免翻页被新搜索取消
+        viewModelScope.launch {
+            try {
+                when (kind) {
+                    1 -> {
+                        val add = withContext(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, off) }
+                            .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                        if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
+                        val seen = nmAlbums.map { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }.toHashSet()
+                        val real = add.filter { (if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title) !in seen }
+                        nmAlbums = nmAlbums + real
+                        nmAlbumOffset = off + NM_PAGE_SIZE
+                        nmAlbumsHasMore = real.isNotEmpty()
+                        NmLog.note("专辑翻页完成 offset=$off 新增 " + real.size)
+                    }
+                    2 -> {
+                        val add = withContext(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, off) }
+                            .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                        if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
+                        val seen = nmArtists.map { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }.toHashSet()
+                        val real = add.filter { (if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title) !in seen }
+                        nmArtists = nmArtists + real
+                        nmArtistOffset = off + NM_PAGE_SIZE
+                        nmArtistsHasMore = real.isNotEmpty()
+                        NmLog.note("歌手翻页完成 offset=$off 新增 " + real.size)
+                    }
+                    else -> {
+                        val add = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, off) }
+                            .distinctBy { it.ssid }
+                        if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
+                        keepNetease(add)
+                        val seen = nmSongs.map { it.ssid }.toHashSet()
+                        val real = add.filter { it.ssid !in seen }
+                        nmSongs = nmSongs + real
+                        nmOffset = off + NM_PAGE_SIZE
+                        nmHasMore = real.isNotEmpty()
+                        NmLog.note("歌曲翻页完成 offset=$off 新增 " + real.size)
+                    }
+                }
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                NmLog.err("loadMoreNetease($kw,$off)", e)
+                when (kind) {
+                    1 -> nmAlbumsHasMore = false
+                    2 -> nmArtistsHasMore = false
+                    else -> nmHasMore = false
+                }
+            } finally {
+                nmLoadingMore = false
+            }
+        }
+    }
+
+    /** 网易云歌曲：点封面进专辑页（走网易云，不查本地库） */
+    fun openNmSongAlbum(s: Song) {
+        if (s.source != SRC_NETEASE) {
+            stack.add(Screen.Album(s.artist, s.album))
+            return
+        }
+        if (s.nmAlbumId > 0) {
+            openNmGroup(
+                Group(s.album, s.artist, s.coverUrl, emptyList(),
+                    artist = s.artist, album = s.album,
+                    source = SRC_NETEASE, nmId = s.nmAlbumId, nmKind = "album")
+            )
+            return
+        }
+        // 老还原字符没带专辑 id 时才用名字搜，且必须真的对得上：
+        // 直接 firstOrNull() 会跳到搜索结果里第一张不相干的专辑
+        viewModelScope.launch {
+            val g = withContext(Dispatchers.IO) {
+                val hits = Netease.searchAlbums("$s.artist ${s.album}", 10)
+                hits.firstOrNull { h ->
+                    h.title.isNotBlank() && (
+                    h.title.equals(s.album, ignoreCase = true) ||
+                        h.title.contains(s.album, ignoreCase = true) ||
+                        s.album.contains(h.title, ignoreCase = true))
+                }
+            }
+            if (g != null) openNmGroup(g) else toast("没有找到这张专辑")
+        }
+    }
+
+    /** 网易云歌曲：点歌手进歌手页（走网易云，不查本地库） */
+    fun openNmSongArtist(s: Song) {
+        if (s.source != SRC_NETEASE) {
+            stack.add(Screen.Artist(s.artist))
+            return
+        }
+        if (s.nmArtistId > 0) {
+            // 不传 s.coverUrl：那是歌曲/专辑封面，用了会把歌手头像显示成专辑图。
+            // 歌手真实头像进页面后用 /artist/detail 取。
+            openNmGroup(
+                Group(s.artist, "网易云歌手", null, emptyList(),
+                    artist = s.artist, source = SRC_NETEASE,
+                    nmId = s.nmArtistId, nmKind = "artist")
+            )
+            return
+        }
+        viewModelScope.launch {
+            val names = s.artist.split(Regex("[/,&、]")).map { it.trim() }
+                .filter { it.isNotBlank() }.ifEmpty { listOf(s.artist) }
+            val g = withContext(Dispatchers.IO) {
+                Netease.searchArtists(s.artist, 10).firstOrNull { h ->
+                    h.title.isNotBlank() && names.any { n ->
+                        h.title.equals(n, ignoreCase = true) ||
+                            h.title.contains(n, ignoreCase = true) ||
+                            n.contains(h.title, ignoreCase = true)
+                    }
+                }
+            }
+            if (g != null) openNmGroup(g) else toast("没有找到这个歌手")
+        }
+    }
+
+    /**
+     * 两套曲库不合并（不做去重/混排成一套）：
+     * - 原站结果少于 8 条：先全部原站，再全部网易云
+     * - 否则每 2 条原站后面插入 1 条网易云
+     */
+    fun <T> mix(local: List<T>, nm: List<T>): List<T> {
+        if (nm.isEmpty()) return local
+        if (local.isEmpty()) return nm
+        if (local.size < 8) return local + nm
+        val out = ArrayList<T>(local.size + nm.size)
+        var i = 0
+        var j = 0
+        while (i < local.size || j < nm.size) {
+            repeat(2) { if (i < local.size) out.add(local[i++]) }
+            if (j < nm.size) out.add(nm[j++])
+        }
+        return out
+    }
+
+    /** 打开网易云专辑 / 歌手的歌曲列表 */
+    fun openNmGroup(g: Group) = openNmGroup(g, push = true)
+
+    /**
+     * 确保当前显示的详情页数据与 [s] 对应。
+     *
+     * 之前详情页在离开时无条件 clearNmPage()，而从歌手页点进专辑时，
+     * 旧页面的 dispose 会把新页面刚设好的状态清掉 —— 表现就是
+     * 「请求成功了却不显示，要再进一次才有」。现在改成显示时按栈顶校正。
+     */
+    fun ensureNmPage(s: Screen.NmSongs) {
+        val g = nmPage
+        if (g != null && g.nmId == s.id && g.nmKind == s.kind) return
+        NmLog.note("校正详情页：${s.kind}/${s.id}（原来是 ${g?.nmKind}/${g?.nmId}）")
+        openNmGroup(
+            Group(s.title, "", s.cover, emptyList(),
+                artist = s.artist, source = SRC_NETEASE, nmId = s.id, nmKind = s.kind),
+            push = false,
+        )
+    }
+
+    /** [push] = false 时只更新内容，不往栈里加页面（返回上层时用） */
+    private fun openNmGroup(g: Group, push: Boolean) {
+        if (push) stack.add(Screen.NmSongs(g.nmKind, g.nmId, g.title, g.cover, g.artist))
+        nmPage = g
+        nmPageSongs = emptyList()
+        nmPageAlbums = emptyList()
+        nmPageLoading = true
+        nmPageAlbumsLoading = g.nmKind == "artist"
+        nmPageTab = 0
+        nmPageSongOffset = 0
+        nmPageAlbumOffset = 0
+        nmPageSongsHasMore = false
+        nmPageAlbumsHasMore = false
+        // 歌手页不沿用歌曲封面：先留空，拿到歌手详情后填真实头像
+        nmPageCover = if (g.nmKind == "artist") null else g.cover
+        // 专辑页副标题显示歌手名（列表没带时稍后补）；歌手页留空
+        nmPageSubtitle = if (g.nmKind == "album") g.artist else ""
+        val kind = g.nmKind
+        val id = g.nmId
+        val ck = "$kind/$id"
+        // 命中缓存：直接用，不再发请求（返回上层时尤其有用）
+        val hit = nmPageCache[ck]
+        if (hit != null) {
+            nmPageSongs = hit.first
+            nmPageAlbums = hit.second
+            nmPageLoading = false
+            nmPageAlbumsLoading = false
+            nmPageSongOffset = if (kind == "artist") hit.first.size.coerceAtLeast(NM_PAGE_SIZE) else 0
+            nmPageAlbumOffset = hit.second.size.coerceAtLeast(NM_PAGE_SIZE)
+            nmPageSongsHasMore = kind == "artist" && hit.first.size >= NM_PAGE_SIZE
+            nmPageAlbumsHasMore = hit.second.size >= NM_PAGE_SIZE
+            return
+        }
+        viewModelScope.launch {
+            val l = withContext(Dispatchers.IO) {
+                runCatching { Netease.songsOf(kind, id, NM_PAGE_SIZE, 0) }.getOrDefault(emptyList())
+            }
+            keepNetease(l)
+            nmPageSongs = l
+            nmPageSongOffset = NM_PAGE_SIZE
+            nmPageSongsHasMore = kind == "artist" && l.size >= NM_PAGE_SIZE
+            nmPageLoading = false
+            if (kind != "artist") {
+                nmPageCache[ck] = l to emptyList()
+                // 专辑页副标题显示歌手名；列表里没带歌手时，单独取一次详情。
+                // 榜单（playlist）的副标题是更新频率，不需要补，也不该去调 /album
+                if (kind == "album" && nmPageSubtitle.isBlank()) {
+                    launch {
+                        val a = withContext(Dispatchers.IO) {
+                            runCatching { Netease.albumArtist(id) }.getOrNull()
+                        }
+                        if (!a.isNullOrBlank()) nmPageSubtitle = a
+                    }
+                }
+            }
+            // 歌手：并行取头像与专辑列表
+            if (kind == "artist") {
+                launch {
+                    val d = withContext(Dispatchers.IO) {
+                        runCatching { Netease.artistDetail(id) }.getOrNull()
+                    }
+                    // 用歌手自己的头像，避免误用专辑封面
+                    if (d?.cover != null) nmPageCover = d.cover
+                }
+                launch {
+                    val al = withContext(Dispatchers.IO) {
+                        runCatching { Netease.artistAlbums(id, NM_PAGE_SIZE, 0) }.getOrDefault(emptyList())
+                    }
+                    nmPageAlbums = al
+                    nmPageAlbumOffset = NM_PAGE_SIZE
+                    nmPageAlbumsHasMore = al.size >= NM_PAGE_SIZE
+                    nmPageAlbumsLoading = false
+                    nmPageCache[ck] = nmPageSongs to al
+                }
+            }
+        }
+    }
+
+    /** 歌手 / 专辑页：切换分栏 */
+    fun chooseNmPageTab(t: Int) { nmPageTab = t }
+
+    /** 歌手页：歌曲或专辑滑到底时加载下一页 */
+    fun loadMoreNmPage(kind: Int) {
+        val g = nmPage ?: return
+        if (nmPageLoadingMore) return
+        val songMode = kind == 0
+        if (songMode && (!nmPageSongsHasMore || g.nmKind != "artist")) return
+        if (!songMode && !nmPageAlbumsHasMore) return
+        val off = if (songMode) nmPageSongOffset else nmPageAlbumOffset
+        val kindStr = g.nmKind
+        val id = g.nmId
+        nmPageLoadingMore = true
+        NmLog.note("详情页翻页 kind=$kind offset=$off id=$id")
+        viewModelScope.launch {
+            try {
+                if (songMode) {
+                    val add = withContext(Dispatchers.IO) {
+                        runCatching { Netease.songsOf(kindStr, id, NM_PAGE_SIZE, off) }.getOrDefault(emptyList())
+                    }
+                    keepNetease(add)
+                    val seen = nmPageSongs.map { it.ssid }.toHashSet()
+                    val real = add.filter { it.ssid !in seen }
+                    nmPageSongs = nmPageSongs + real
+                    nmPageSongOffset = off + NM_PAGE_SIZE
+                    nmPageSongsHasMore = real.isNotEmpty()
+                } else {
+                    val add = withContext(Dispatchers.IO) {
+                        runCatching { Netease.artistAlbums(id, NM_PAGE_SIZE, off) }.getOrDefault(emptyList())
+                    }
+                    val seen = nmPageAlbums.map { it.nmId }.toHashSet()
+                    val real = add.filter { it.nmId !in seen }
+                    nmPageAlbums = nmPageAlbums + real
+                    nmPageAlbumOffset = off + NM_PAGE_SIZE
+                    nmPageAlbumsHasMore = real.isNotEmpty()
+                }
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                NmLog.err("loadMoreNmPage($kind,$off)", e)
+                if (songMode) nmPageSongsHasMore = false else nmPageAlbumsHasMore = false
+            } finally {
+                nmPageLoadingMore = false
+            }
+        }
+    }
+
+    /** 离开网易云歌曲页时清理状态（返回由 TopBar 统一出栈） */
+    fun clearNmPage() {
+        nmPage = null
+        nmPageSongs = emptyList()
+        nmPageAlbums = emptyList()
+        nmPageLoading = false
+        nmPageAlbumsLoading = false
+        nmPageLoadingMore = false
+        nmPageSongsHasMore = false
+        nmPageAlbumsHasMore = false
+        nmPageTab = 0
+        nmPageSongOffset = 0
+        nmPageAlbumOffset = 0
+        nmPageCover = null
+        nmPageSubtitle = ""
+    }
+
+    fun pushHistory(ssid: String) {
+        val l = (listOf(ssid) + history.filter { it != ssid }).take(MAX_HISTORY)
+        history = l
+        prefs.history = l
+    }
+
+    fun clearHistory() {
+        history = emptyList()
+        prefs.history = emptyList()
+    }
+
+    /** 单条删除历史 */
+    fun removeHistory(ssid: String) {
+        val l = history.filter { it != ssid }
+        history = l
+        prefs.history = l
+    }
+
+    /** 历史页开关 */
+    var showHistory by mutableStateOf(false)
+
+    // ================= 检查更新 ================
+    /** 当前版本 */
+    val appVersion: String get() = Updater.current()
+    /** 检查中 */
+    var updateChecking by mutableStateOf(false); private set
+    /** 检查结果；null = 还没查或查询失败 */
+    var updateInfo by mutableStateOf<Updater.Info?>(null); private set
+    /** 只在启动时静默查一次，有更新才弹出 */
+    private var autoChecked = false
+    /** 是否显示全屏更新弹窗（启动检测到新版本时自动弹出） */
+    var showUpdate by mutableStateOf(false)
+    /** 应用内下载进度：已下载 / 总字节；null = 没在下载 */
+    var updateProgress by mutableStateOf<Pair<Long, Long>?>(null); private set
+    /** 下载好的 APK，等待安装 */
+    var updateFile by mutableStateOf<java.io.File?>(null); private set
+    /** 需要申请「安装未知应用」权限，由 Activity 处理 */
+    var needInstallPerm by mutableStateOf(false); private set
+
+    /**
+     * 是否已被系统排除在电池优化之外。
+     *
+     * 没豁免时，熄屏一段时间进入 Doze 后系统会限制网络并回收后台服务 ——
+     * 表现就是「后台放着放着就停了，通知也没了」。国产 ROM 尤其激进。
+     * 这个开关只能在系统设置里由用户手动改，应用无法自己打开。
+     */
+    var batteryExempt by mutableStateOf(true); private set
+
+    /** 重新读一次电池优化状态（设置页打开、从系统设置返回时调） */
+    fun refreshBatteryExempt() {
+        batteryExempt = runCatching {
+            val pm = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (Build.VERSION.SDK_INT >= 23) pm?.isIgnoringBatteryOptimizations(app.packageName) ?: true
+            else true
+        }.getOrDefault(true)
+    }
+
+    /** 打开系统的电池优化设置页（让用户手动加白名单） */
+    fun openBatterySettings() {
+        try {
+            val i = if (Build.VERSION.SDK_INT >= 23) {
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:${app.packageName}")
+                }
+            } else {
+                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            }
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            app.startActivity(i)
+        } catch (e: Exception) {
+            try {
+                Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .let { app.startActivity(it) }
+            } catch (ignored: Exception) { }
+        }
+    }
+
+    /**
+     * 打开应用详情页。
+     *
+     * 国产 ROM（小米 / 华为 / OPPO / vivo 等）在电池白名单之外，
+     * 还有「自启动」「后台运行」「锁定最近任务」几道开关，没有统一接口，
+     * 只能把用户送到应用详情页自己找。
+     */
+    fun openAppDetails() {
+        try {
+            val i = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:${app.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            app.startActivity(i)
+        } catch (e: Exception) {
+            runCatching { openBatterySettings() }
+        }
+    }
+
+    /** 启动检测弹过一次后，本次进程内不再自动弹 */
+    private var autoShown = false
+
+    /** 检查更新。[silent] = true 时查不到更新不提示 */
+    fun checkUpdate(silent: Boolean = false) {
+        if (updateChecking) return
+        updateChecking = true
+        viewModelScope.launch {
+            val info = withContext(Dispatchers.IO) { runCatching { Updater.check() }.getOrNull() }
+            updateInfo = info
+            updateChecking = false
+            when {
+                info == null -> if (!silent) toast("检查更新失败，请检查网络")
+                info.hasUpdate -> {
+                    // 发现新版本：全屏弹窗让用户选更新方式
+                    showUpdate = true
+                }
+                !silent -> toast("当前已是最新版本 ${appVersion}")
+            }
+        }
+    }
+
+    /** 启动时静默检查一次，有新版就弹全屏弹窗 */
+    fun autoCheckUpdate() {
+        if (autoChecked) return
+        autoChecked = true
+        checkUpdate(silent = true)
+    }
+
+    /** 启动检测完成后若发现有新版，自动弹一次（只弹一次） */
+    fun maybeShowUpdateDialog() {
+        if (autoShown) return
+        val info = updateInfo ?: return
+        if (!info.hasUpdate) return
+        autoShown = true
+        showUpdate = true
+    }
+
+    fun closeUpdate() {
+        showUpdate = false
+        updateProgress = null
+    }
+
+    /**
+     * 清除缓存：封面、歌词翻译、播放整首缓存、更新安装包。
+     * 这些都在 ctx.cacheDir 下，删掉不影响歌单、下载记录与登录态。
+     */
+    fun clearCache() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val freed = AppCache.clear(app)
+            withContext(Dispatchers.Main) {
+                toast(
+                    if (freed > 0) "已清除缓存 ${freed / 1024 / 1024} MB"
+                    else "没有可清除的缓存",
+                )
+            }
+        }
+    }
+
+    /** 应用内更新：下载 APK 后走系统安装（需要安装权限） */
+    fun updateInApp() {
+        val info = updateInfo ?: return
+        if (updateProgress != null) return
+        // 安装包放缓存目录：装完就删，也不占数据目录（方便清理）
+        val dir = AppCache.updateDir(app)
+        updateProgress = 0L to 0L
+        viewModelScope.launch {
+            val f = withContext(Dispatchers.IO) {
+                // 下载回调是「每读完一个 64KB 块」触发一次。
+                // 之前每个块都 viewModelScope.launch 一个协程去写状态 ——
+                // 一个 30MB 的安装包会瞬间堆出几百个协程，全部挤到主线程，
+                // 界面被拖住、看着就像有几十个下载在同时跑。
+                // 现在直接写状态（Compose 的 State 是线程安全的），
+                // 并节流到 200ms 一次；最后一块必定写入，保证进度收尾到 100%。
+                var lastEmit = 0L
+                Updater.downloadApk(info, dir) { done, total ->
+                    val now = System.currentTimeMillis()
+                    if (done < total && now - lastEmit < 200) return@downloadApk
+                    lastEmit = now
+                    updateProgress = done to total
+                }
+            }
+            if (f == null) {
+                updateProgress = null
+                toast("下载失败，可改用应用外更新")
+                return@launch
+            }
+            updateProgress = null
+            updateFile = f
+            // 没授予「安装未知应用」权限时，先让 Activity 去申请
+            val canInstall = if (android.os.Build.VERSION.SDK_INT >= 26) {
+                app.packageManager.canRequestPackageInstalls()
+            } else true
+            if (canInstall) installApk(f) else needInstallPerm = true
+        }
+    }
+
+    /**
+     * 应用内直升：下载完 APK 后直接用 PackageInstaller 覆盖安装。
+     *
+     * 这是「升级」不是「重装」——MODE_FULL_INSTALL + 同一包名 + 相同签名，
+     * 系统会保留数据，用户不需要先卸载。
+     *
+     * 这里不申请 USER_ACTION_NOT_REQUIRED（免确认）：
+     * 多数设备会拒绝它，而且是异步通过广播返回失败的，
+     * 提交时看不出问题，结果就是点了更新什么都没发生。
+     * 走标准流程会拿到 STATUS_PENDING_USER_ACTION，
+     * 由 InstallResultReceiver 把系统确认界面拉起来。
+     */
+    fun installApk(f: java.io.File) {
+        needInstallPerm = false
+        updateProgress = null
+        updateFile = f
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { commitSession(f) }.onFailure {
+                NmLog.note("安装会话提交失败：${it.message}")
+            }.isSuccess
+            // 会话这条路走不通就退回系统安装界面
+            if (!ok) withContext(Dispatchers.Main) { installViaView(f) }
+        }
+    }
+
+    /** 建立 PackageInstaller 会话并提交 */
+    private fun commitSession(f: java.io.File) {
+        val installer = app.packageManager.packageInstaller
+        val p = android.content.pm.PackageInstaller.SessionParams(
+            android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL,
+        )
+        // 指定被更新的包名，系统才按「升级」处理从而保留数据
+        runCatching { p.setAppPackageName(app.packageName) }
+        val id = installer.createSession(p)
+        installer.openSession(id).use { ses ->
+            ses.openWrite("GoMusic", 0, f.length()).use { os ->
+                f.inputStream().use { it.copyTo(os) }
+                ses.fsync(os)
+            }
+            val pi = android.app.PendingIntent.getBroadcast(
+                app, id,
+                android.content.Intent(app, InstallResultReceiver::class.java)
+                    .setAction(InstallResultReceiver.ACTION)
+                    .putExtra(InstallResultReceiver.EXTRA_SESSION, id)
+                    .putExtra(InstallResultReceiver.EXTRA_FILE, f.absolutePath),
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (android.os.Build.VERSION.SDK_INT >= 23)
+                        android.app.PendingIntent.FLAG_IMMUTABLE else 0),
+            )
+            ses.commit(pi.intentSender)
+        }
+        NmLog.note("安装会话已提交 id=$id")
+    }
+
+    /** 兜底：用系统安装界面打开 APK */
+    fun installViaView(f: java.io.File) {
+        val uri = runCatching {
+            androidx.core.content.FileProvider.getUriForFile(
+                app, "${app.packageName}.fileprovider", f,
+            )
+        }.getOrElse {
+            toast("无法打开安装界面：${it.message}")
+            return
+        }
+        val i = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { app.startActivity(i) }
+            .onFailure { toast("无法打开安装界面：${it.message}") }
+    }
+
+    /** 安装权限结果回来后，继续安装已下载的 APK */
+    fun onInstallPermResult(granted: Boolean) {
+        needInstallPerm = false
+        val f = updateFile
+        if (granted && f != null) installApk(f)
+        else if (!granted) toast("需要允许安装未知应用才能更新")
+    }
+
+    /** 应用外更新：交给浏览器 / 系统下载器 */
+    fun updateByBrowser(): String? {
+        val info = updateInfo ?: return null
+        return Updater.downloadUrl(info)
+    }
+
+    // ================= 首页 =================
+    /** 每日推荐（需要登录） */
+    var homeRecommend by mutableStateOf<List<Song>>(emptyList()); private set
+    /** 新歌速递 */
+    var homeNewSongs by mutableStateOf<List<Song>>(emptyList()); private set
+    /** 热门歌手 */
+    var homeTopArtists by mutableStateOf<List<Group>>(emptyList()); private set
+    /** 最新专辑（新碟上架） */
+    var homeNewAlbums by mutableStateOf<List<Group>>(emptyList()); private set
+    /** 榜单（/toplist） */
+    var homeTops by mutableStateOf<List<Group>>(emptyList()); private set
+    /** 离线模式下首页要展示的已下载歌曲 */
+    val homeDownloaded: List<Song> get() = LocalLib.songs(downloads)
+    /** 热搜词 */
+    var homeHotWords by mutableStateOf<List<String>>(emptyList()); private set
+    var homeLoading by mutableStateOf(false); private set
+    /** 新歌速递固定「全部」（type = 0），不提供地区切换 */
+    val newSongType: Int get() = 0
+
+    private var homeJob: Job? = null
+    /** 首页是否已加载过：加载过就不再重复请求，切回首页直接用缓存 */
+    private var homeLoaded = false
+
+    /**
+     * 加载首页数据：每日推荐 + 新歌速递 + 热搜，三路并行。
+     *
+     * 默认只在第一次进入首页时真正请求；[force] = true 用于手动刷新。
+     */
+    fun loadHome(force: Boolean = false) {
+        // 换回首页直接用缓存，不再重复请求
+        if (homeLoaded && !force) {
+            NmLog.note("首页已加载过，使用缓存（force=$force）")
+            return
+        }
+        homeJob?.cancel()
+        if (!nmReady) {
+            homeRecommend = emptyList()
+            homeNewSongs = emptyList()
+            homeHotWords = emptyList()
+            homeTopArtists = emptyList()
+            homeNewAlbums = emptyList()
+            homeTops = emptyList()
+            homeLoading = false
+            return
+        }
+        homeLoading = true
+        homeJob = viewModelScope.launch {
+            try {
+                val dR = async(Dispatchers.IO) { Netease.recommendSongs() }
+                val dN = async(Dispatchers.IO) { Netease.topSongs(newSongType) }
+                val dH = async(Dispatchers.IO) { Netease.hotSearch() }
+                val dA = async(Dispatchers.IO) { Netease.topArtists(30, 0) }
+                val dAl = async(Dispatchers.IO) { Netease.newestAlbums(30) }
+                // 显式写空列表类型：runCatching + getOrDefault(emptyList()) 推不出元素类型
+                val dT = async(Dispatchers.IO) {
+                    runCatching { Netease.topList() }.getOrDefault(emptyList<Group>())
+                }
+                val r = dR.await()
+                val n = dN.await()
+                val h = dH.await()
+                val artists = dA.await()
+                val albums = dAl.await()
+                val tops = dT.await()
+                keepNetease(r + n)
+                homeRecommend = r
+                homeNewSongs = n
+                homeHotWords = h
+                homeTopArtists = artists
+                homeNewAlbums = albums
+                homeTops = tops
+                homeLoaded = true
+                NmLog.note(
+                    "首页加载完成：推荐 ${r.size} / 新歌 ${n.size} / 热搜 ${h.size}" +
+                        " / 榜单 ${tops.size} / 热门歌手 ${artists.size} / 最新专辑 ${albums.size}"
+                )
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                NmLog.err("loadHome", e)
+            } finally {
+                homeLoading = false
+            }
+        }
+    }
+
+    /** 点热搜词：填入搜索框并回到歌曲页 */
+    fun searchHotWord(w: String) {
+        query = w
+        chooseTab(TAB_SONGS)
+    }
+
+    // ================= 列表派生 =================
+    // 排行结果缓存：只在歌曲列表本身变化时重算，
+    // 这样退出二级页回到歌曲页不会重新洗牌，顺序保持稳定
+    private var rankedInput: List<Song>? = null
+    private var rankedCache: List<Song> = emptyList()
+    val rankedSongs: List<Song>
+        get() {
+            val s = songs
+            if (rankedInput !== s) {
+                rankedCache = rank(s)
+                rankedInput = s
+            }
+            return rankedCache
+        }
+
+    fun rank(l: List<Song>): List<Song> {
+        val c = counts
+        return l.shuffled().sortedByDescending { c[it.ssid] ?: 0 } // 稳定排序：并列项保持随机顺序
+    }
+
+    // 分组结果同样缓存，搜索时只做过滤，不再重新分组
+    private var albumsInput: List<Song>? = null
+    private var albumsCache: List<Group> = emptyList()
+    val albumGroupList: List<Group>
+        get() {
+            val s = songs
+            if (albumsInput !== s) { albumsCache = albums(s); albumsInput = s }
+            return albumsCache
+        }
+
+    private var artistsInput: List<Song>? = null
+    private var artistsInfo: Map<String, ArtistInfo>? = null
+    private var artistsCache: List<Group> = emptyList()
+    val artistGroupList: List<Group>
+        get() {
+            val s = songs
+            val ai = artistInfo
+            if (artistsInput !== s || artistsInfo !== ai) {
+                artistsCache = artistGroups(s)
+                artistsInput = s
+                artistsInfo = ai
+            }
+            return artistsCache
+        }
+
+    fun albums(l: List<Song>): List<Group> =
+        l.groupBy { it.artist to it.album }.map { (k, v) ->
+            Group(
+                title = k.second.ifBlank { "未知专辑" },
+                subtitle = "${k.first} · ${v.size} 首",
+                cover = v.firstNotNullOfOrNull { it.coverUrl },
+                songs = v, artist = k.first, album = k.second,
+            )
+        }
+
+    fun artistGroups(l: List<Song>): List<Group> =
+        l.groupBy { it.artist }.map { (a, v) ->
+            Group(
+                title = a.ifBlank { "未知歌手" },
+                subtitle = "${v.map { it.album }.distinct().size} 张专辑 · ${v.size} 首",
+                cover = artistInfo[a]?.image?.takeIf { it.isNotBlank() }
+                    ?: v.firstNotNullOfOrNull { it.coverUrl },
+                songs = v, artist = a,
+            )
+        }
+
+    /** ssid -> Song 索引，随 songs 变化重建一次，避免每个列表项都重建整张表 */
+    private val songMap: Map<String, Song> by derivedStateOf { songs.associateBy { it.ssid } }
+
+    /**
+     * ssid -> Song。
+     *
+     * 歌单里可能混着本站与网易云的歌，只查本地 songs 的话
+     * 网易云歌曲会查不到 —— 表现就是「加了歌单却看不见」。
+     */
+    fun songsByIds(ids: List<String>): List<Song> {
+        val m = songMap
+        val nm = nmSongs.associateBy { it.ssid }
+        val known = nmKnown.toMap()
+        val sn = snapshots
+        val dl = downloads.associateBy { it.ssid }
+        return ids.mapNotNull { id ->
+            m[id] ?: nm[id] ?: known[id] ?: sn[id] ?: dl[id]?.let {
+                Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null })
+            }
+        }
+    }
+
+    /**
+     * 专辑 / 歌手页用：以主曲库为准；主曲库里没有这张专辑 / 这个歌手时
+     * （还原字符导入的歌、播放队列里的歌常常不在当前曲库），
+     * 再从队列 / 网易云缓存 / 快照 / 下载记录里补齐，
+     * 否则点进去是空页，看着就像「跳到了别的专辑」。
+     */
+    fun songsForGroup(artist: String, album: String? = null): List<Song> {
+        if (artist.isBlank() || (album != null && album.isBlank())) return emptyList()
+        val match: (Song) -> Boolean = {
+            it.artist == artist && (album == null || it.album == album)
+        }
+        val inLib = songs.filter(match)
+        if (inLib.isNotEmpty()) return inLib
+        val pool = queueSongs.values + nmKnown.values + snapshots.values +
+            downloads.map {
+                Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null })
+            }
+        return pool.filter(match).distinctBy { it.ssid }
+    }
+
+    /** 把一批歌曲记进快照，保证加进歌单后随时能查到 */
+    fun keepForPlaylist(l: List<Song>) {
+        if (l.isEmpty()) return
+        rememberSongs(l)
+    }
+
+    // ================= 播放 =================
+    private fun artworkUri(u: String?): Uri? {
+        if (u.isNullOrBlank()) return null
+        return when {
+            u.startsWith("content://") || u.startsWith("file://") || u.startsWith("/") ->
+                runCatching { Uri.parse(u) }.getOrNull()
+            else -> Api.abs(u)?.takeIf { it.startsWith("http") }?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        }
+    }
+
+    /**
+     * 队列条目。uri 里带上当前音质：换音质时 uri 跟着变，播放器才会重新解析音源。
+     * 只靠 prefs 的话，replaceMediaItem 拿到的是同一个 uri，
+     * ExoPlayer 认为没变化，于是「音质切了，音源还是原来那份」。
+     */
+    private fun toItem(s: Song): MediaItem = MediaItem.Builder()
+        .setMediaId(s.ssid)
+        .setUri("gomusic:///${s.ssid}?q=${quality}&nl=${prefs.nmLevel}")
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(s.title)
+                .setArtist(s.artist)
+                .setAlbumTitle(s.album)
+                .setArtworkUri(artworkUri(s.coverUrl))
+                .build()
+        )
+        .build()
+
+    fun playSongs(list: List<Song>, index: Int) {
+        if (list.isEmpty()) return
+        // 先记下整份队列：导入歌单里的歌可能不在主曲库，
+        // 播放器与「点封面/歌手」都要以这一份为准
+        queueSongs = list.associateBy { it.ssid }
+        keepNetease(list)
+        val c = controller
+        if (c == null) {
+            afterConnect = { playSongs(list, index) }
+            return
+        }
+        // 点下去就先把要播这首的地址取起来：取地址要打十几个请求，
+        // 而它同时在 ExoPlayer 的准备线程上同步做。提前起一轮，
+        // 等播放器真正来解析时多半已经落在缓存里，不用干等。
+        runCatching { prefetchCurrent(list, index) }
+        c.setMediaItems(list.map(::toItem), index.coerceIn(0, list.lastIndex), 0)
+        c.prepare()
+        c.play()
+    }
+
+    /**
+     * 预取马上要播的这一首的音源地址。
+     *
+     * 只取这一首，不连带后面几首：预取本身也是十几个请求，
+     * 一次预取三首等于把请求量翻三倍，反而把当前这首歌的起播拖慢。
+     */
+    private fun prefetchCurrent(list: List<Song>, index: Int) {
+        val p = Prefs(app)
+        Netease.cookie = p.nmCookie
+        val nid = neteaseIdOf(list[index.coerceIn(0, list.lastIndex)].ssid) ?: return
+        Netease.prefetchAudioUrl(nid, quality, p.nmLevel.takeIf { it.isNotBlank() })
+    }
+
+    fun playIndex(i: Int) {
+        controller?.let { it.seekTo(i, 0); it.play() }
+    }
+
+    fun togglePlay() {
+        val c = controller ?: return
+        if (c.isPlaying) c.pause() else c.play()
+    }
+
+    fun next() {
+        val c = controller ?: return
+        // 单曲循环：不跳列表，直接把这一首从头重播
+        if (playMode == MODE_REPEAT_ONE) { c.seekTo(0); c.play(); return }
+        c.seekToNext()
+    }
+
+    fun prev() {
+        val c = controller ?: return
+        // 单曲循环：同上，从头重播这一首
+        if (playMode == MODE_REPEAT_ONE) { c.seekTo(0); c.play(); return }
+        if (c.currentPosition > 3000) c.seekTo(0) else c.seekToPrevious()
+    }
+
+    fun seekTo(ms: Long) { controller?.seekTo(ms) }
+
+    fun moveQueue(from: Int, to: Int) { controller?.moveMediaItem(from, to) }
+    fun removeQueue(i: Int) { controller?.removeMediaItem(i) }
+
+    /** 把一首歌追加到播放列表末尾（只加这一首，不动队列里已有的歌） */
+    fun addToQueue(s: Song) {
+        queueSongs = queueSongs + (s.ssid to s)
+        keepNetease(listOf(s))
+        val c = controller
+        if (c == null) {
+            afterConnect = { addToQueue(s) }
+            return
+        }
+        c.addMediaItem(toItem(s))
+        toast("已加入播放列表：${s.title}")
+    }
+
+    /** 清空播放列表（保留当前正在播放的那一首） */
+    fun clearQueue() {
+        val c = controller ?: return
+        val n = c.mediaItemCount
+        if (n <= 0) return
+        val cur = c.currentMediaItemIndex
+        // 先移除当前项之后的所有项，再移除之前的，始终保留正在播放的这首
+        for (i in n - 1 downTo cur + 1) c.removeMediaItem(i)
+        for (i in 0 until cur) c.removeMediaItem(0)
+        toast("已清空播放列表")
+    }
+
+    fun cycleMode() {
+        playMode = (playMode + 1) % 3
+        prefs.playMode = playMode
+        controller?.let(::applyMode)
+        toast(listOf("列表循环", "随机播放", "单曲循环")[playMode])
+    }
+
+    private fun applyMode(c: MediaController) {
+        when (playMode) {
+            MODE_LIST_LOOP -> { c.repeatMode = Player.REPEAT_MODE_ALL; c.shuffleModeEnabled = false }
+            MODE_SHUFFLE -> { c.repeatMode = Player.REPEAT_MODE_ALL; c.shuffleModeEnabled = true }
+            else -> { c.repeatMode = Player.REPEAT_MODE_ONE; c.shuffleModeEnabled = false }
+        }
+    }
+
+    // ================= 后台播放 =================
+    fun updateFocus(m: Int) {
+        if (m == FOCUS_CALL_ONLY && ContextCompat.checkSelfPermission(app, Manifest.permission.READ_PHONE_STATE)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingFocus = m
+            needPhonePerm = true
+            return
+        }
+        applyFocus(m)
+    }
+
+    private fun applyFocus(m: Int) {
+        playFocus = m
+        prefs.playFocus = m
+        // 通知播放服务重新设置音频焦点策略（同一进程内 startService 即可）
+        runCatching {
+            app.startService(Intent(app, PlaybackService::class.java).setAction(PlaybackService.ACTION_APPLY_FOCUS))
+        }
+    }
+
+    fun onPhonePermissionResult(granted: Boolean) {
+        val m = pendingFocus
+        pendingFocus = null
+        if (m == null) return
+        if (granted) {
+            applyFocus(m)
+        } else {
+            // 没有电话权限就检测不到通话，按「始终播放」处理
+            applyFocus(FOCUS_ALWAYS)
+            toast("未授予电话权限，已设为始终播放")
+        }
+    }
+
+    fun updateSpeed(v: Float) {
+        speed = v
+        controller?.setPlaybackSpeed(v)
+    }
+
+    /** 歌曲 id -> 实际能拿到的音质档位，探测过就缓存，避免每首都重探 */
+    private val nmLevelsCache =
+        java.util.concurrent.ConcurrentHashMap<Long, Netease.LevelProbe>()
+
+    /** 简繁转换模式：0 简体 / 1 繁体 / 2 仅搜索统一 / 3 不转换 */
+    var zhConvert by mutableIntStateOf(prefs.zhConvert)
+    /** 全局字体：0 系统 / 1 思源宋体 */
+    var fontKind by mutableIntStateOf(prefs.fontKind); private set
+    /** 可变字体的字重（wght），250~900，默认 450 */
+    var fontWght by mutableIntStateOf(prefs.fontWght); private set
+
+
+    /** 改简繁设置：立即生效（界面与文字都会跟着变）
+     *  名字不能叫 setZhConvert —— 会和 var 自动生成的 setter 撞 JVM 签名 */
+    fun chooseZhConvert(m: Int) {
+        zhConvert = m
+        prefs.zhConvert = m
+    }
+
+    /** 切换全局字体（0 系统 / 1 思源宋体）。字体内置在 APK 里，切换即生效 */
+    fun chooseFontKind(k: Int) {
+        fontKind = k
+        prefs.fontKind = k
+    }
+
+    /**
+     * 调整可变字体的字重（250~900）。
+     * 拖动滑块时每次都会落盘，退出再进保持不变。
+     */
+    fun chooseFontWght(w: Int) {
+        val v = w.coerceIn(250, 900)
+        fontWght = v
+        prefs.fontWght = v
+    }
+
+    /** 当前是否为网易云音质档位名（quality 菜单可能是网易云的档位） */
+    val nmQualityMode: Boolean get() = curSsid?.let { isNetease(it) } == true
+    /** 网易云当前音质档位（空 = 跟随设置） */
+    val nmLevel: String get() = prefs.nmLevel
+
+    /** 当前网易云歌曲实际用的档位：菜单里高亮这一项 */
+    val curLevel: String get() =
+        prefs.nmLevel.takeIf { it.isNotBlank() } ?: nmLevelOfQuality(quality)
+
+    fun updateQuality(k: String) {
+        // 网易云歌曲：档位存到 nmLevel，不动本站的 quality
+        if (k in NM_LEVELS) {
+            if (k == curLevel) return
+            prefs.nmLevel = k
+        } else {
+            quality = k
+            prefs.quality = k
+        }
+        val c = controller ?: return
+        if (c.mediaItemCount == 0) return
+        try {
+            val i = c.currentMediaItemIndex
+            val pos = c.currentPosition
+            val old = c.getMediaItemAt(i)
+            // 只改 uri 上的音质参数、保留原有元数据：
+            // 之前要回头查 songsByIds 找 Song，查不到就静默放弃、什么都不发生
+            val uri = "gomusic:///${old.mediaId}?q=$quality&nl=${prefs.nmLevel}"
+            val item = old.buildUpon().setUri(Uri.parse(uri)).build()
+            val wasPlaying = c.isPlaying
+            c.replaceMediaItem(i, item)
+            // 强制重新准备：只 replace 的话 ExoPlayer 会沿用已缓冲的旧音源，
+            // 听感上就是「档位切了，声音没变」
+            c.stop()
+            c.prepare()
+            c.seekTo(i, pos)
+            if (wasPlaying) c.play()
+        } catch (ignored: Exception) {
+        }
+    }
+
+    // ================= 播放器连接 =================
+    private fun attach(c: MediaController) {
+        c.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) { this@MainViewModel.isPlaying = isPlaying }
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                onItem(mediaItem, true)
+                prefetchAhead()
+            }
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                refreshQueue()
+                prefetchAhead()
+            }
+        })
+        applyMode(c)
+        c.setPlaybackSpeed(speed)
+        isPlaying = c.isPlaying
+        refreshQueue()
+        onItem(c.currentMediaItem, false)
+        afterConnect?.let { afterConnect = null; it() }
+    }
+
+    /**
+     * 打开音质菜单时才探测这首歌有哪些档位（结果缓存，只探一次）。
+     *
+     * 放在这里而不是切歌时：探测最多要 14 个请求，跟播放毫无关系，
+     * 切歌时跑它会和取地址、取歌词抢连接，把整首歌的起播拖慢。
+     */
+    fun probeQualities() {
+        val id = curSsid ?: return
+        val nid = neteaseIdOf(id) ?: return
+        if (offline) return
+        if (nmLevelsCache.containsKey(nid)) {
+            nmLevelsCache[nid]?.let {
+                qualitiesAbsent = it.absent.toSet()
+                if (it.ok.isNotEmpty()) qualities = it.ok
+            }
+            return
+        }
+        if (qualitiesProbing) return
+        qualitiesProbing = true
+        viewModelScope.launch {
+            val p = withContext(Dispatchers.IO) {
+                runCatching { Netease.availableLevels(nid) }.getOrNull()
+            }
+            qualitiesProbing = false
+            if (p != null) {
+                nmLevelsCache[nid] = p
+                if (curSsid == id) {
+                    qualitiesAbsent = p.absent.toSet()
+                    if (p.ok.isNotEmpty() && !offline) qualities = p.ok
+                }
+            }
+        }
+    }
+
+    private var qualitiesProbing = false
+
+    /** 预取后面几首的音源地址，切过去时直接命中缓存，不用再干等 */
+    private fun prefetchAhead() {
+        val c = controller ?: return
+        val p = Prefs(app)
+        val nm = neteaseIdOf(curSsid)
+        if (nm == null) return
+        Netease.cookie = p.nmCookie
+        val i = c.currentMediaItemIndex + 1
+        if (i < c.mediaItemCount) {
+            val nid = neteaseIdOf(c.getMediaItemAt(i).mediaId) ?: return
+            Netease.prefetchAudioUrl(nid, quality, p.nmLevel.takeIf { it.isNotBlank() })
+        }
+    }
+
+    private fun refreshQueue() {
+        val c = controller ?: return
+        queue = (0 until c.mediaItemCount).map { i ->
+            val m = c.getMediaItemAt(i)
+            QueueEntry(
+                m.mediaId,
+                m.mediaMetadata.title?.toString() ?: "",
+                m.mediaMetadata.artist?.toString() ?: "",
+                m.mediaMetadata.artworkUri?.toString(),
+            )
+        }
+        curIndex = c.currentMediaItemIndex
+    }
+
+    private fun onItem(item: MediaItem?, count: Boolean) {
+        val id = item?.mediaId?.takeIf { it.isNotEmpty() }
+        curSsid = id
+        curIndex = controller?.currentMediaItemIndex ?: 0
+        if (id == null) {
+            lyric = emptyList()
+            lyricLoading = false
+            lyricSsid = null
+            qualities = emptyList()
+            qualitiesAbsent = emptySet()
+            return
+        }
+        // 同一首歌（切音质后会再次走到这里）：歌词不用重来、也不该重复计播放。
+        //
+        // 但必须同时确认歌词确实已经加载好了 —— 只判 id == lyricSsid 会卡死：
+        // lyricSsid 是加载「完成后」才写的，于是 A 的歌词加载中切到 B，
+        // B 还没加载完又切回 A 时，lyricSsid 仍是 A，这里直接 return，
+        // 而此时 lyric 已被清空、lyricLoading 还是 true —— 界面就一直转圈。
+        // 表现就是「下一首再切回上一首，歌词永远加载不出来」。
+        // 已经加载好了：直接复用（切音质后会再次走到这里，不该重来）
+        if (id == lyricSsid) return
+        // 正在为这一首加载：让它跑完，绝不能重启。
+        //
+        // 上一版把 lyricSsid 提前到加载开始时写入，于是同一首歌在加载期间
+        // 再次走到这里时，lyricSsid 已经等于 id，被当成「没在加载」而重启任务。
+        // onItem 会被多次调用（连接播放器一次、切歌回调一次），于是任务被
+        // 反复取消重启：歌词永远出不来，且每次重启都重新发一轮网络请求，
+        // 把连接池占满 —— 音频和图片也跟着变慢。
+        if (id == lyricLoadingFor) return
+        lyricJob?.cancel()
+        lyricLoadingFor = id
+        lyric = emptyList()
+        lyricLoading = true
+        qualities = emptyList()
+        qualitiesAbsent = emptySet()
+        if (count) {
+            val m = counts.toMutableMap()
+            m[id] = (m[id] ?: 0) + 1
+            counts = m
+            prefs.playCounts = m
+            pushHistory(id) // 本站与网易云统一记录
+            rememberSongs(listOfNotNull(songMap[id] ?: nmKnown[id] ?: snapshots[id]))
+        }
+        updateCover((songMap[id] ?: nmKnown[id])?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
+        // 缓存里没有译文时，从随下载保存的文件里调回来（离线播放尤其需要）
+        loadLocalTransIfNeeded(id)
+        // 网易云歌曲：歌词走网易云接口，优先级高于本站
+        if (isNetease(id)) {
+            if (count) pushHistory(id)
+            // 网易云歌曲：音质档位与本站分开，菜单里列网易云自己的档位。
+            // 离线时只列已经下载过的音质（没下载的播不了，不显示）
+            qualities = if (offline) downloadedQualities(id).ifEmpty { NM_LEVELS } else NM_LEVELS
+            val nid = neteaseIdOf(id)
+            // 音质档位不再在切歌时探测。
+            //
+            // 探测要对 7 个档位各发一次请求（失败还会再试一次），最多 14 个
+            // 请求 —— 而它只是为了让菜单能置灰「无音源」的档位，跟播放无关。
+            // 切歌时它和取地址、取歌词、预取一起涌向同一个服务端，
+            // 是「什么都慢」的最大一块。改成打开音质菜单时才探测
+            // （见 probeQualities），切歌本身一个请求都不多发。
+            if (nid != null && !offline) {
+                nmLevelsCache[nid]?.let { hit ->
+                    qualitiesAbsent = hit.absent.toSet()
+                    if (hit.ok.isNotEmpty()) qualities = hit.ok
+                }
+            }
+            lyricJob = viewModelScope.launch {
+                // 播放前用 /song/detail 补全封面 / 专辑 / 歌手
+                // （搜索接口给的 al.picUrl 经常是空的）
+                if (nid != null) {
+                    val d = withContext(Dispatchers.IO) {
+                        runCatching { Netease.detailOf(nid) }.getOrNull()
+                    }
+                    if (d != null && curSsid == id) {
+                        nmKnown[id] = d
+                        probeMv(d)
+                        // 用详情里的完整信息刷新列表里的这一首
+                        nmSongs = nmSongs.map { if (it.ssid == id) d else it }
+                        updateCover(d.coverUrl)
+                        // 记进快照（会持久化），保证历史里始终能查到这首
+                        rememberSongs(listOf(d))
+                    }
+                }
+                // 加超时：接口慢 / 重试退避时不再一直卡在「正在加载歌词…」，
+                // 超时就按「没有歌词」处理，界面显示「暂无歌词」
+                var t = withTimeoutOrNull(lyricTimeoutMs) {
+                    var x = ""
+                    if (nid != null) {
+                        x = withContext(Dispatchers.IO) {
+                            runCatching { Netease.lyric(nid) }.getOrDefault("")
+                        }
+                    }
+                    if (x.isBlank()) x = withContext(Dispatchers.IO) { localLyrics(id) }
+                    x
+                } ?: ""
+                if (curSsid == id) {
+                    lyric = lyricLines(t)
+                    lyricLoading = false
+                    lyricSsid = id
+                }
+                if (lyricLoadingFor == id) lyricLoadingFor = null
+            }
+            return
+        }
+        // 离线模式：直接读本地歌词，绝不发网络请求
+        // （否则会走 3 次重试 + 退避等待，歌词要十几秒才出来，还会拖住其他请求）
+        if (offline) {
+            // 离线只能播已下载的音质，菜单里就不列没下载的
+            qualities = downloadedQualities(id)
+            lyricJob = viewModelScope.launch {
+                val t = withTimeoutOrNull(lyricTimeoutMs) {
+                    withContext(Dispatchers.IO) { localLyrics(id) }
+                } ?: ""
+                if (curSsid == id) {
+                    lyric = lyricLines(t)
+                    lyricLoading = false
+                    lyricSsid = id
+                }
+                if (lyricLoadingFor == id) lyricLoadingFor = null
+            }
+            return
+        }
+        lyricJob = viewModelScope.launch {
+            try {
+                val d = withContext(Dispatchers.IO) { Api.detail(id) }
+                if (curSsid != id) return@launch
+                // 离线只显示已下载的音质
+                qualities = if (offline) {
+                    downloadedQualities(id)
+                } else {
+                    d.audio.keys.sortedBy { Api.rank(it) }
+                }
+                var t = d.lyrics
+                val more = withTimeoutOrNull(lyricTimeoutMs) {
+                    var x = if (t.isBlank()) {
+                        withContext(Dispatchers.IO) { runCatching { Api.lyrics(id) }.getOrDefault("") }
+                    } else t
+                    if (x.isBlank()) x = withContext(Dispatchers.IO) { localLyrics(id) }
+                    x
+                }
+                if (more != null) t = more
+                if (curSsid == id) {
+                    lyric = lyricLines(t)
+                    lyricLoading = false
+                    lyricSsid = id
+                }
+                if (lyricLoadingFor == id) lyricLoadingFor = null
+            } catch (ignored: Exception) {
+                val t = withContext(Dispatchers.IO) { localLyrics(id) }
+                if (curSsid == id && t.isNotBlank()) lyric = lyricLines(t)
+                if (curSsid == id) {
+                    lyricLoading = false
+                    lyricSsid = id
+                }
+                if (lyricLoadingFor == id) lyricLoadingFor = null
+            }
+        }
+    }
+
+    /** 取封面主色，并设定亮度下限，保证在深色底上可读 */
+    private fun updateCover(url: String?) {
+        val u = Api.abs(url)
+        if (u == null || !u.startsWith("http")) { coverColor = null; return }
+        val target = curSsid
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val req = ImageRequest.Builder(app).data(u).allowHardware(false).size(160).build()
+                val res = app.imageLoader.execute(req)
+                val bmp = (res.drawable as? BitmapDrawable)?.bitmap ?: return@launch
+                val pal = Palette.from(bmp).generate()
+                val rgb = (pal.vibrantSwatch ?: pal.dominantSwatch)?.rgb ?: return@launch
+                val hsl = FloatArray(3)
+                ColorUtils.colorToHSL(rgb, hsl)
+                hsl[2] = hsl[2].coerceAtLeast(0.72f)
+                hsl[1] = hsl[1].coerceAtLeast(0.30f)
+                val c = Color(ColorUtils.HSLToColor(hsl))
+                withContext(Dispatchers.Main) { if (curSsid == target) coverColor = c }
+            } catch (ignored: Exception) {
+            }
+        }
+    }
+
+    // ================= 主题 =================
+    fun setTheme(c: Color?) {
+        fixedTheme = c
+        prefs.themeColor = c?.toArgb()
+    }
+
+    // ================= 歌单 =================
+    private fun savePl(l: List<Playlist>) { playlists = l; prefs.playlists = l }
+
+    fun pick(ssids: List<String>, name: String, cover: String? = null) {
+        if (ssids.isEmpty()) return
+        val ids = ssids.distinct()
+        // 把要加的歌（含网易云）记进快照，保证歌单里随时能查到
+        keepForPlaylist(songsByIds(ids))
+        pickReq = PickRequest(ids, name, cover)
+    }
+
+    fun createPlaylist(name: String, ssids: List<String> = emptyList(), cover: String? = null): Playlist {
+        val ids = ssids.distinct()
+        keepForPlaylist(songsByIds(ids))
+        val p = Playlist(UUID.randomUUID().toString(), name.trim(), ids, cover)
+        savePl(playlists + p)
+        return p
+    }
+
+    /**
+     * 网易云专辑 / 歌手页：整页歌曲新建一个歌单。
+     * 名字用专辑 / 歌手名，封面用它自己的封面。
+     */
+    fun createFromNmPage(name: String, cover: String?) {
+        val list = nmPageSongs
+        if (list.isEmpty()) {
+            toast("还没有歌曲")
+            return
+        }
+        val p = createPlaylist(name, list.map { it.ssid }, cover)
+        toast("已新建歌单「${p.name}」，共 ${p.songs.size} 首")
+    }
+
+    // ================= 同步网易云歌单 =================
+
+    /** 同步状态：true 表示正在同步，界面上给个转圈 */
+    var nmSyncing by mutableStateOf(false); private set
+
+    /**
+     * 把「我的网易云歌单」同步到本地歌单。
+     *
+     * 按 nmId 匹配：本地已有对应歌单就更新歌曲与名字，没有才新建。
+     * 不做删除 —— 网易云那边删掉的歌单，本地保留（万一只是接口没返回，
+     * 直接删掉用户的本地歌单代价太大）。
+     */
+    fun syncNmPlaylists() {
+        if (!nmOn) { toast("请先开启「接入网易云曲库」"); return }
+        if (prefs.nmCookie.isBlank()) { toast("请先登录网易云"); return }
+        if (nmSyncing) return
+        nmSyncing = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var uid = prefs.nmUid
+                if (uid <= 0L) {
+                    uid = runCatching { Netease.uid() }.getOrDefault(0L)
+                    if (uid > 0L) prefs.nmUid = uid
+                }
+                if (uid <= 0L) {
+                    withContext(Dispatchers.Main) { toast("取不到网易云 uid，请重新登录后再同步") }
+                    return@launch
+                }
+                val mine = runCatching { Netease.userPlaylists(uid) }.getOrDefault(emptyList())
+                if (mine.isEmpty()) {
+                    withContext(Dispatchers.Main) { toast("没有取到网易云歌单（可能未登录或没有自建歌单）") }
+                    return@launch
+                }
+                var added = 0
+                var updated = 0
+                var cur = playlists.toMutableList()
+                val all = ArrayList<Song>()
+                for (g in mine) {
+                    val songs = runCatching { Netease.songsOf("playlist", g.nmId, 1000) }
+                        .getOrDefault(emptyList())
+                    if (songs.isEmpty()) continue
+                    all.addAll(songs)
+                    val ids = songs.map { it.ssid }
+                    val at = cur.indexOfFirst { it.nmId == g.nmId }
+                    if (at >= 0) {
+                        cur[at] = cur[at].copy(name = g.title, songs = ids, cover = g.cover ?: cur[at].cover)
+                        updated++
+                    } else {
+                        cur.add(Playlist(UUID.randomUUID().toString(), g.title, ids, g.cover, g.nmId))
+                        added++
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    // 记进快照：歌单里存的是 ssid，不记住的话打开歌单是空的。
+                    // 统一放主线程做 —— snapshots 是界面状态，IO 线程改不安全
+                    rememberSongs(all)
+                    savePl(cur)
+                    nmSyncing = false
+                    toast("同步完成：新增 $added 个，更新 $updated 个")
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    nmSyncing = false
+                    toast("同步失败：${e.message ?: "未知错误"}")
+                }
+            }
+        }
+    }
+
+    fun addToPlaylist(id: String, ssids: List<String>) {
+        val p = playlists.firstOrNull { it.id == id } ?: return
+        keepForPlaylist(songsByIds(ssids))
+        savePl(playlists.map { q ->
+            if (q.id == id) q.copy(songs = (q.songs + ssids).distinct()) else q
+        })
+        syncNmAdd(p, ssids)
+        toast("已加入歌单")
+    }
+
+    /**
+     * 一次导出多个歌单。
+     * 每个歌单生成一行还原字符，多行拼在一起；导入时按行拆分逐个还原。
+     */
+    fun exportPlaylists(ids: List<String>): String {
+        val lines = ids.mapNotNull { id -> exportPlaylist(id) }
+        if (lines.isEmpty()) toast("选中的歌单都没有可导出的歌曲")
+        return lines.joinToString("\n")
+    }
+
+    /** 导出歌单：返回还原字符（可生成二维码 / 存文件 / 复制） */
+    fun exportPlaylist(id: String): String? {
+        val p = playlists.firstOrNull { it.id == id } ?: return null
+        val songs = songsByIds(p.songs)
+        if (songs.isEmpty()) {
+            toast("歌单是空的，没有可导出的内容")
+            return null
+        }
+        return PlaylistShare.encode(p, songs)
+    }
+
+    /**
+     * 导入歌单：由还原字符还原成一个新歌单。
+     * 已存在同名歌单时追加到后面，不覆盖原有歌单。
+     */
+    fun importPlaylist(text: String): Boolean {
+        // 支持一次导入多个：每个歌单一行还原字符，逐行还原
+        val lines = text.split("\n").map { it.trim() }.filter { it.isNotBlank() }
+        if (lines.size > 1) {
+            var ok = 0
+            lines.forEach { if (importOne(it)) ok++ }
+            if (ok > 0) toast("已导入 $ok 个歌单")
+            else toast("还原字符无法识别，请检查是否完整")
+            return ok > 0
+        }
+        return importOne(text)
+    }
+
+    /** 还原单个歌单（一行还原字符） */
+    private fun importOne(text: String): Boolean {
+        val snap = PlaylistShare.decode(text)
+        if (snap == null) {
+            return false
+        }
+        if (snap.songs.isEmpty()) {
+            toast("这个歌单里没有歌曲")
+            return false
+        }
+        // 还原成完整 Song：新版还原字符带网易云 id，老版没有的字段
+        // 用本地已有快照补齐（点封面/歌手就不会退化成按名字模糊搜）。
+        // force = true：导入的信息才是这个歌单该显示的，旧快照同 ssid 的
+        // 记录可能是另一张专辑 / 另一个歌手，不覆盖就会串歌。
+        rememberSongs(snap.songs.map { item ->
+            val old = snapshots[item.ssid]
+            Song(
+                ssid = item.ssid,
+                title = item.title,
+                artist = item.artist,
+                album = item.album,
+                coverUrl = item.cover,
+                source = item.source,
+                nmId = item.nmId.takeIf { v -> v > 0 } ?: old?.nmId ?: 0,
+                nmAlbumId = item.nmAlbumId.takeIf { v -> v > 0 } ?: old?.nmAlbumId ?: 0,
+                nmArtistId = item.nmArtistId.takeIf { v -> v > 0 } ?: old?.nmArtistId ?: 0,
+                mvId = item.mvId.takeIf { v -> v > 0 } ?: old?.mvId ?: 0,
+            )
+        }, force = true)
+        val ids = snap.songs.map { it.ssid }.distinct()
+        // 与已有歌单重名时，给导入的这个改名，不动原有歌单
+        val p = Playlist(UUID.randomUUID().toString(), uniqueName(snap.name.ifBlank { "导入的歌单" }), ids)
+        savePl(playlists + p)
+        toast("已导入：${p.name}（${ids.size} 首）")
+        return true
+    }
+
+    /** 名字已被占用时追加 (2)(3)…，保证不覆盖已有歌单 */
+    private fun uniqueName(base: String): String {
+        val used = playlists.map { it.name }.toHashSet()
+        if (base !in used) return base
+        var i = 2
+        while ("$base($i)" in used) i++
+        return "$base($i)"
+    }
+
+    fun renamePlaylist(id: String, name: String) {
+        val p = playlists.firstOrNull { it.id == id } ?: return
+        val n = name.trim()
+        savePl(playlists.map { if (it.id == id) it.copy(name = n) else it })
+        // 网易云歌单：改名回写云端
+        if (p.nmId > 0L && prefs.nmCookie.isNotBlank()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val ok = runCatching { Netease.playlistRename(p.nmId, n) }.getOrDefault(false)
+                withContext(Dispatchers.Main) { if (!ok) toast("网易云歌单改名未成功（本地已改）") }
+            }
+        }
+    }
+
+    fun deletePlaylist(id: String) = savePl(playlists.filter { it.id != id })
+
+    fun movePl(id: String, from: Int, to: Int) {
+        savePl(playlists.map { p ->
+            if (p.id != id) p else {
+                val l = p.songs.toMutableList()
+                val x = l.removeAt(from)
+                l.add(to, x)
+                p.copy(songs = l)
+            }
+        })
+    }
+
+    fun removeFromPl(id: String, ssid: String) {
+        val p = playlists.firstOrNull { it.id == id } ?: return
+        savePl(playlists.map { q -> if (q.id == id) q.copy(songs = q.songs - ssid) else q })
+        syncNmRemove(p, listOf(ssid))
+    }
+
+    /**
+     * 本地歌单删歌后，把删掉的那几首同步到网易云歌单。
+     *
+     * 只处理网易云来源的歌：本站曲库的歌在网易云那边不存在，
+     * 传过去要么被忽略、要么报错，所以直接跳过。
+     */
+    private fun syncNmRemove(p: Playlist, ssids: List<String>) {
+        if (p.nmId <= 0L || prefs.nmCookie.isBlank()) return
+        val ids = ssids.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
+        if (ids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { Netease.playlistDel(p.nmId, ids) }.getOrDefault(false)
+            withContext(Dispatchers.Main) { if (!ok) toast("网易云歌单未同步删除（本地已删）") }
+        }
+    }
+
+    /**
+     * 本地歌单加歌后，把新增的那几首同步到网易云歌单。
+     * 同样只同步网易云来源的歌（见 [syncNmRemove]）。
+     */
+    private fun syncNmAdd(p: Playlist, ssids: List<String>) {
+        if (p.nmId <= 0L || prefs.nmCookie.isBlank()) return
+        val ids = ssids.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
+        if (ids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { Netease.playlistAdd(p.nmId, ids) }.getOrDefault(false)
+            withContext(Dispatchers.Main) { if (!ok) toast("网易云歌单未同步添加（本地已加）") }
+        }
+    }
+
+    // ================= MV =================
+
+    /** 正在取 MV 地址（功能栏按钮据此转圈） */
+    var mvLoading by mutableStateOf(false); private set
+
+    /**
+     * 播放当前歌曲的 MV。
+     *
+     * 先暂停音频：视频自带声音，两个一起放会混在一起。
+     * 取到地址后压入 [Screen.Video]，由 VideoScreen 播放。
+     */
+    fun playMv() {
+        val s = currentSong
+        if (s == null) { toast("暂无歌曲"); return }
+        val id = s.mvId
+        if (id <= 0L) { toast("这首歌没有 MV"); return }
+        if (mvLoading) return
+        mvLoading = true
+        // 视频自带声音，先把音频停掉，否则两个声音会混在一起
+        runCatching { controller?.pause() }
+        viewModelScope.launch(Dispatchers.IO) {
+            val url = runCatching { Netease.mvUrl(id) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                mvLoading = false
+                if (url.isNullOrBlank()) toast("没有取到 MV 地址")
+                else stack.add(Screen.Video(s.title, url))
+            }
+        }
+    }
+
+    // ---- MV 下载 ----
+    /** MV 是否正在下载 */
+    var mvDownloading by mutableStateOf(false); private set
+    /** MV 下载进度 0~1，负数表示还不知道总大小 */
+    var mvDownloadProgress by mutableFloatStateOf(-1f); private set
+
+    /**
+     * 下载当前 MV 的视频文件到 Download/GoMusic/MV。
+     *
+     * MV 是直链视频，不走歌曲那套「音频 + 封面 + 歌词 + 信息文件」的流程，
+     * 也不写下载记录（它不是一首歌，不能当成歌曲离线播放）。
+     */
+    fun downloadMv(v: Screen.Video) {
+        if (mvDownloading) return
+        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        mvDownloading = true
+        mvDownloadProgress = 0f
+        val noti = Noti(app)
+        noti.ensureChannel()
+        viewModelScope.launch(Dispatchers.IO) {
+            var lastBytes = 0L
+            var lastTime = System.currentTimeMillis()
+            val r = runCatching {
+                LocalLib.downloadMv(app, v.title, v.url) { done, total ->
+                    val now = System.currentTimeMillis()
+                    val dt = now - lastTime
+                    if (dt < 400 && done < total) return@downloadMv
+                    lastBytes = done
+                    lastTime = now
+                    val pct = if (total > 0) (done * 100 / total).toInt() else -1
+                    viewModelScope.launch(Dispatchers.Main) {
+                        mvDownloadProgress = if (total > 0) done.toFloat() / total else -1f
+                        noti.progress(
+                            v.title, 1, 1, pct, "",
+                            if (total > 0) "${Noti.size(done)} / ${Noti.size(total)}" else Noti.size(done),
+                        )
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                mvDownloading = false
+                mvDownloadProgress = -1f
+                noti.cancel()
+                r.onSuccess { toast("MV 已保存到 ${LocalLib.dirText()}${LocalLib.MV_DIR}/") }
+                    .onFailure { toast("MV 下载失败") }
+            }
+        }
+    }
+
+    // ================= 下载 / 提示 / 链接 =================
+    fun isDownloaded(ssid: String): Boolean = ssid in downloadedIds
+
+    /** 当前下载要用的音质（网易云歌曲用网易云档位） */
+    private fun downloadQuality(s: Song): String =
+        if (s.source == SRC_NETEASE) nmLevel.takeIf { it.isNotBlank() } ?: nmLevelOfQuality(quality)
+        else quality
+
+    /** 这首歌是否已经下载过 [q] 这个音质 */
+    fun isDownloadedWithQuality(ssid: String, q: String): Boolean =
+        downloads.any { it.ssid == ssid && (q.isBlank() || it.quality == q) }
+
+    /** 这首歌已经下载了哪些音质 */
+    fun downloadedQualities(ssid: String): List<String> =
+        downloads.filter { it.ssid == ssid && it.audio.isNotBlank() }
+            .map { it.quality }.filter { it.isNotBlank() }.distinct()
+
+    /** 下载歌曲本体 + 封面 + 歌词 + 歌曲信息，并写入本地记录（离线可用） */
+    fun download(list: List<Song>) {
+        if (list.isEmpty()) return
+        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        // 同一首歌可以下多个音质：按（歌曲 + 音质）判断是否已下载
+        val todo = list.filter { s ->
+            val q = downloadQuality(s)
+            s.ssid !in downloading && !isDownloadedWithQuality(s.ssid, q)
+        }
+        if (todo.isEmpty()) {
+            toast(
+                when {
+                    list.all { isDownloadedWithQuality(it.ssid, downloadQuality(it)) } ->
+                        "这个音质已下载过，换一个音质可在播放页切换后再下载"
+                    else -> "已在下载队列中"
+                }
+            )
+            return
+        }
+        // 列表里可能混着本站 / 网易云，按音质是否一致分组下载
+        val groups = todo.groupBy { downloadQuality(it) }
+        downloading = downloading + todo.map { it.ssid }
+        toast("开始下载 ${todo.size} 首（${qualityLabel(todo.first().let { downloadQuality(it) })}）")
+        groups.forEach { (q, items) -> runDownload(items, q) }
+    }
+
+    /** 实际执行下载：逐个顺序下载，进度同时更新到通知与应用内进度条 */
+    private fun runDownload(todo: List<Song>, quality: String) {
+        val noti = Noti(app)
+        noti.ensureChannel()
+        // 开始下载时立刻给一次应用内提示，不用等通知栏
+        toast(
+            if (todo.size > 1) "开始下载 ${todo.size} 首（${qualityLabel(quality)}）"
+            else "开始下载：${todo.firstOrNull()?.title ?: ""}（${qualityLabel(quality)}）",
+        )
+        // 逐个顺序下载：速度才是当前这一首的真实速度，通知与进度条也才对得上
+        viewModelScope.launch(Dispatchers.IO) {
+            var ok = 0
+            val done = ArrayList<Pair<Song, DownloadRecord>>()
+            todo.forEachIndexed { i, s ->
+                noti.progress(s.title, i + 1, todo.size, -1, "", "")
+                withContext(Dispatchers.Main) {
+                    dlStatus = DlStatus(s.title, i + 1, todo.size, 0L, -1L, 0L)
+                }
+                var lastBytes = 0L
+                var lastTime = System.currentTimeMillis()
+                val r = runCatching {
+                    LocalLib.download(app, s, quality) { done, total ->
+                        val now = System.currentTimeMillis()
+                        val dt = now - lastTime
+                        if (dt < 400 && done < total) return@download
+                        val bps = if (dt > 0) (done - lastBytes) * 1000 / dt else 0
+                        lastBytes = done
+                        lastTime = now
+                        val pct = if (total > 0) (done * 100 / total).toInt() else -1
+                        viewModelScope.launch(Dispatchers.Main) {
+                            dlStatus = DlStatus(s.title, i + 1, todo.size, done, total, bps)
+                            noti.progress(
+                                s.title, i + 1, todo.size, pct,
+                                Noti.speed(bps),
+                                if (total > 0) "${Noti.size(done)} / ${Noti.size(total)}" else Noti.size(done),
+                            )
+                        }
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    downloading = downloading - s.ssid
+                    r.onSuccess { rec ->
+                        // 同歌不同音质各自保留一条记录
+                        val l = prefs.downloads.filter {
+                            !(it.ssid == rec.ssid && it.quality == rec.quality)
+                        } + rec
+                        prefs.downloads = l
+                        downloads = l
+                        if (offline) songs = LocalLib.songs(l)
+                        done += s to rec
+                        ok++
+                        noti.done("${s.title} 下载完成")
+                        toast("已下载：${s.title}（${qualityLabel(rec.quality)}）")
+                    }.onFailure {
+                        noti.done("${s.title} 下载失败")
+                        toast("下载失败：${s.title}")
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                dlStatus = null
+                noti.cancel()
+                // 批量下载结束时再给一次汇总提示，避免只看到单首的 toast
+                if (todo.size > 1) toast("下载结束：成功 $ok 首，失败 ${todo.size - ok} 首")
+            }
+            // 汇总提示之后再补译文：AI 整篇翻译可能较慢，
+            // 既不能挡住下一首歌的下载进度，也不该把「下载结束」拖到翻译完才显示
+            if (done.isNotEmpty()) ensureTranslations(done)
+        }
+    }
+
+    /** 重新下载某一音质（文件丢失 / 损坏时用） */
+    fun redownloadQuality(rec: DownloadRecord) {
+        viewModelScope.launch(Dispatchers.IO) {
+            LocalLib.deleteRecord(app, rec)
+            val l = prefs.downloads.filterNot { it.ssid == rec.ssid && it.quality == rec.quality }
+            prefs.downloads = l
+            withContext(Dispatchers.Main) {
+                downloads = l
+                val song = Song(rec.ssid, rec.title, rec.artist, rec.album, rec.cover.ifBlank { null })
+                downloadWithQuality(listOf(song), rec.quality)
+            }
+        }
+    }
+
+    /** 删除某一个音质的下载（同一首歌的其他音质保留） */
+    fun deleteDownloadQuality(rec: DownloadRecord) {
+        viewModelScope.launch(Dispatchers.IO) {
+            LocalLib.deleteRecord(app, rec)
+            val l = prefs.downloads.filterNot { it.ssid == rec.ssid && it.quality == rec.quality }
+            prefs.downloads = l
+            withContext(Dispatchers.Main) {
+                downloads = l
+                if (offline) songs = LocalLib.songs(l)
+                toast("已删除：${rec.title}（${qualityLabel(rec.quality)}）")
+            }
+        }
+    }
+
+    /** 删除一首歌的全部音质 */
+    fun deleteDownload(ssid: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.downloads.filter { it.ssid == ssid }.forEach { LocalLib.deleteRecord(app, it) }
+            val l = prefs.downloads.filterNot { it.ssid == ssid }
+            prefs.downloads = l
+            withContext(Dispatchers.Main) {
+                downloads = l
+                if (offline) songs = LocalLib.songs(l)
+                toast("已删除下载")
+            }
+        }
+    }
+
+    /**
+     * 下载整个歌单。
+     *
+     * 音质按来源分开处理：歌单里可能混着本站歌曲和网易云歌曲，
+     * 网易云的档位（exhigh / lossless …）和本站的 quality 键不是一套，
+     * [downloadQuality] 会分别取，[download] 再按音质分组下载。
+     * 已经下过当前音质的自动跳过。
+     */
+    fun downloadPlaylist(pl: Playlist) {
+        val list = songsByIds(pl.songs)
+        if (list.isEmpty()) { toast("歌单里没有歌曲"); return }
+        val pending = list.filter { !isDownloadedWithQuality(it.ssid, downloadQuality(it)) }
+        if (pending.isEmpty()) {
+            toast("这个音质已全部下载过，换音质可在播放页切换后再下载")
+            return
+        }
+        download(list)
+    }
+
+    /**
+     * 整个歌单按指定音质批量下载。
+     *
+     * 音质不能一刀切：歌单里可能同时有本站歌曲和网易云歌曲，
+     * 两套音质键不同（lossless/high/normal 与 standard/exhigh/lossless…），
+     * 所以按来源分开下 —— 网易云那部分用选的档位，
+     * 本站那部分只在选的是本站键时才用，否则沿用当前音质设置。
+     */
+    fun downloadAllWithQuality(songs: List<Song>, q: String) {
+        if (songs.isEmpty()) return
+        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        val nm = songs.filter { it.source == SRC_NETEASE }
+        val local = songs.filter { it.source != SRC_NETEASE }
+        val localKey = if (q in listOf("lossless", "high", "normal", "low")) q else quality
+        val nmTodo = nm.filter { it.ssid !in downloading && !isDownloadedWithQuality(it.ssid, q) }
+        val localTodo = local.filter { it.ssid !in downloading && !isDownloadedWithQuality(it.ssid, localKey) }
+        val total = nmTodo.size + localTodo.size
+        if (total == 0) { toast("这个音质已下载过"); return }
+        downloading = downloading + nmTodo.map { it.ssid } + localTodo.map { it.ssid }
+        if (nmTodo.isNotEmpty()) runDownload(nmTodo, q)
+        if (localTodo.isNotEmpty()) runDownload(localTodo, localKey)
+    }
+
+    /** 按指定音质下载（重新下载时用） */
+    fun downloadWithQuality(list: List<Song>, q: String) {
+        if (list.isEmpty()) return
+        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        val todo = list.filter { it.ssid !in downloading && !isDownloadedWithQuality(it.ssid, q) }
+        if (todo.isEmpty()) { toast("这个音质已下载过"); return }
+        runDownload(todo, q)
+    }
+
+    fun clearDownloads() {
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.downloads.forEach { LocalLib.deleteRecord(app, it) }
+            prefs.downloads = emptyList()
+            withContext(Dispatchers.Main) {
+                downloads = emptyList()
+                if (offline) songs = emptyList()
+                toast("已清空下载")
+            }
+        }
+    }
+
+    /** 本地歌词：在线取不到时用 */
+    fun localLyrics(ssid: String): String {
+        val rec = downloads.firstOrNull { it.ssid == ssid } ?: return ""
+        return LocalLib.readText(app, rec.lyric)
+    }
+
+    fun toast(m: String) {
+        toastMsg = m
+        toastJob?.cancel()
+        toastJob = viewModelScope.launch { delay(2500); toastMsg = null }
+    }
+
+    fun songLink(ssid: String) = "$BASE/?s=$ssid"
+    fun albumLink(artist: String, album: String) =
+        "$BASE/?p=alb&ar=${Uri.encode(artist)}&al=${Uri.encode(album)}"
+    fun artistLink(artist: String) = "$BASE/?p=art&ar=${Uri.encode(artist)}"
+
+    fun handleLink(u: Uri?) {
+        if (u == null) return
+        if (songs.isEmpty()) { pendingLink = u; return }
+        u.getQueryParameter("s")?.let { ssid ->
+            songs.firstOrNull { it.ssid == ssid }?.let { playSongs(listOf(it), 0) }
+            return
+        }
+        when (u.getQueryParameter("p")) {
+            "alb" -> {
+                val ar = u.getQueryParameter("ar") ?: return
+                val al = u.getQueryParameter("al") ?: return
+                stack.add(Screen.Album(ar, al))
+            }
+            "art" -> stack.add(Screen.Artist(u.getQueryParameter("ar") ?: return))
+        }
+    }
+
+    // 放在最后：初始化顺序依赖上面的属性
+    init {
+        load()
+        val token = SessionToken(app, ComponentName(app, PlaybackService::class.java))
+        val f = MediaController.Builder(app, token).buildAsync()
+        f.addListener({
+            try {
+                val c = f.get()
+                controller = c
+                attach(c)
+            } catch (e: Exception) {
+                toast("播放器连接失败")
+            }
+        }, ContextCompat.getMainExecutor(app))
+        viewModelScope.launch {
+            while (true) {
+                // 只有播放页/歌词页可见时才写进度状态：
+                // 否则每 250ms 的 state 写入会让整个界面（含正在滑动的长列表）反复重组
+                if (showPlayer || showLyrics) {
+                    delay(250)
+                    controller?.let { c ->
+                        positionMs = c.currentPosition.coerceAtLeast(0)
+                        durationMs = if (c.duration == C.TIME_UNSET) 0 else c.duration.coerceAtLeast(0)
+                    }
+                } else {
+                    delay(1000)
+                }
+            }
+        }
+    }
+}

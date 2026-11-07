@@ -1,3 +1,5 @@
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+
 plugins {
     kotlin("jvm") version "2.1.21"
     kotlin("plugin.serialization") version "2.1.21"
@@ -6,48 +8,62 @@ plugins {
 }
 
 group = "de.myocd"
-version = "1.7.0"
+version = "26.11.8"
 
 // ---------- 平台相关依赖（FFmpeg 原生库 / OpenAL 原生库）----------
 // 只打当前系统的原生库，避免把 5 个平台的 so/dll/dylib 全塞进去（几百 MB）
 fun hostOs(): String {
     val n = System.getProperty("os.name").lowercase()
-    return when {
-        "win" in n -> "windows"
-        "mac" in n || "darwin" in n -> "macosx"
-        else -> "linux"
-    }
+    return when { "win" in n -> "windows"; "mac" in n || "darwin" in n -> "macosx"; else -> "linux" }
 }
-
 fun isArm(): Boolean {
     val a = System.getProperty("os.arch").lowercase()
     return a.contains("aarch64") || a.contains("arm64") || a.contains("armv7")
 }
-
-fun ffmpegClassifier(): String {
-    val os = hostOs()
-    return when (os) {
-        "windows" -> "windows-x86_64"
-        "macosx" -> if (isArm()) "macosx-arm64" else "macosx-x86_64"
-        else -> if (isArm()) "linux-arm64" else "linux-x86_64"
-    }
+fun ffmpegClassifier() = when (hostOs()) {
+    "windows" -> "windows-x86_64"
+    "macosx" -> if (isArm()) "macosx-arm64" else "macosx-x86_64"
+    else -> if (isArm()) "linux-arm64" else "linux-x86_64"
 }
-
-fun joalClassifier(): String {
-    val os = hostOs()
-    return when (os) {
-        "windows" -> "natives-windows-amd64"
-        "macosx" -> "natives-macosx-universal"
-        else -> if (isArm()) "natives-linux-aarch64" else "natives-linux-amd64"
-    }
+fun joalClassifier() = when (hostOs()) {
+    "windows" -> "natives-windows-amd64"
+    "macosx" -> "natives-macosx-universal"
+    else -> if (isArm()) "natives-linux-aarch64" else "natives-linux-amd64"
 }
-
-// 可在命令行用 -Pffmpeg.platform=xxx 覆盖
 val ffmpegPlat = (project.findProperty("ffmpeg.platform") as String?) ?: ffmpegClassifier()
 val joalPlat = (project.findProperty("joal.platform") as String?) ?: joalClassifier()
 
+kotlin {
+    jvmToolchain(17)
+    sourceSets {
+        main {
+            kotlin {
+                // 手机端源码逐字复制进 android-src：界面与业务逻辑零改动，
+                // 靠 src/main/kotlin 里的同名 Android API 兼容层在 JVM 上编译。
+                srcDirs("src/main/kotlin", "android-src")
+                // 6 个 Android 平台宿主/服务由桌面实现平替，其余 22 个文件原样编译。
+                exclude(
+                    // 旧 Compose Desktop 版（已废弃）的 UI 代码不参与编译，
+                    // 只保留 Player.kt / Mp3.kt 作为 FFmpeg+OpenAL 播放内核
+                    "gomusic/App.kt", "gomusic/AppState.kt", "gomusic/Data.kt",
+                    "gomusic/Fonts.kt", "gomusic/Images.kt", "gomusic/Main.kt",
+                    "gomusic/Netease.kt", "gomusic/NmIcon.kt", "gomusic/NmLog.kt",
+                    "gomusic/NmUi.kt", "gomusic/PlaylistShare.kt", "gomusic/Prefs.kt",
+                    "gomusic/Store.kt", "gomusic/Ui.kt", "gomusic/Updater.kt",
+                    "gomusic/ZhConvert.kt",
+                    "**/MainActivity.kt",
+                    "**/PlaybackService.kt",
+                    "**/Fonts.kt",
+                    "**/Noti.kt",
+                    "**/PlayCache.kt",
+                    "**/InstallResultReceiver.kt",
+                )
+            }
+        }
+    }
+}
+
 dependencies {
-    // 简繁转换：转换到香港繁体用 opencc4j 的 ZhHkConverterUtil
     implementation("com.github.houbb:opencc4j:1.14.0")
     implementation(compose.desktop.currentOs)
     implementation(compose.runtime)
@@ -58,37 +74,31 @@ dependencies {
     implementation(compose.components.resources)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // 解码：JavaCV 调 FFmpeg（mp3 / flac / aac / ogg / opus / wav 通吃）
     implementation("org.bytedeco:javacv:1.5.12")
     implementation("org.bytedeco:ffmpeg:7.1.1-1.5.12")
     implementation("org.bytedeco:ffmpeg:7.1.1-1.5.12:$ffmpegPlat")
-
     // 输出：OpenAL（JOAL）
     implementation("org.jogamp.joal:joal:2.6.0")
     implementation("org.jogamp.joal:joal:2.6.0:$joalPlat")
     implementation("org.jogamp.gluegen:gluegen-rt:2.6.0")
     implementation("org.jogamp.gluegen:gluegen-rt:2.6.0:$joalPlat")
-
-    // 回退：FFmpeg 或 OpenAL 不可用时用它（纯 Java，仅 MP3）
     implementation("javazoom:jlayer:1.0.1")
-
-    // WebP 封面（服务端封面多为 cover.webp，JDK 自带 ImageIO 不认）
+    // WebP 封面
     implementation("com.twelvemonkeys.imageio:imageio-webp:3.13.0")
-}
-
-kotlin {
-    jvmToolchain(17)
 }
 
 compose.desktop {
     application {
-        mainClass = "gomusic.MainKt"
+        mainClass = "de.myocd.gomusic.DesktopMainKt"
         nativeDistributions {
+            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "GoMusic"
-            packageVersion = "1.7.0"
-            description = "GoMusic Desktop"
+            packageVersion = "26.11.8"
+            description = "GoMusic 桌面版（与手机端界面/功能一致）"
             vendor = "GoMusic"
             copyright = "GoMusic"
             modules("java.base", "java.desktop", "java.logging", "java.prefs", "jdk.unsupported")
@@ -97,5 +107,17 @@ compose.desktop {
             linux { packageName = "gomusic" }
             buildTypes.release.proguard { isEnabled.set(false) }
         }
+    }
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    compilerOptions {
+        freeCompilerArgs.addAll(
+            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi",
+            "-opt-in=androidx.compose.foundation.layout.ExperimentalLayoutApi",
+            "-opt-in=androidx.compose.ui.text.ExperimentalTextApi",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+            "-opt-in=androidx.compose.ui.ExperimentalComposeUiApi",
+        )
     }
 }
