@@ -24,18 +24,34 @@ jobs:
         include:
           - os: ubuntu-22.04
             name: linux-x64
+            jdkArch: x64
+            tasks: packageReleaseDeb
+            formats: deb
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+            jdkArch: aarch64
             tasks: packageReleaseDeb
             formats: deb
           - os: windows-latest
             name: windows-x64
+            jdkArch: x64
+            tasks: packageReleaseExe packageReleaseMsi
+            formats: exe msi
+          # 上游 JavaCV(FFmpeg) / JogAmp(JOAL) 不发布 windows-arm64 原生库，
+          # 故 ARM64 Windows 用 x64 仿真 JRE 出兼容包（功能与 x64 版完全一致）。
+          - os: windows-11-arm
+            name: windows-arm64
+            jdkArch: x64
             tasks: packageReleaseExe packageReleaseMsi
             formats: exe msi
           - os: macos-latest
             name: macos-arm64
+            jdkArch: aarch64
             tasks: packageReleaseDmg
             formats: dmg
           - os: macos-15-intel
             name: macos-x64
+            jdkArch: x64
             tasks: packageReleaseDmg
             formats: dmg
     runs-on: ${{ matrix.os }}
@@ -45,12 +61,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+          architecture: ${{ matrix.jdkArch }}
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.10.2
 
       # jpackage 的平台依赖：Linux deb 要 fakeroot，Windows exe/msi 要 WiX 3。
-      # 以前这里没有准备，Windows / macOS 的打包步骤会半路失败。
       - name: 准备 jpackage 依赖
         shell: bash
         run: |
@@ -58,7 +74,7 @@ jobs:
           case "${{ runner.os }}" in
             Linux)
               sudo apt-get update
-              sudo apt-get install -y fakeroot
+              sudo apt-get install -y fakeroot dpkg-dev
               ;;
             Windows)
               if ! command -v candle.exe >/dev/null 2>&1; then
@@ -117,10 +133,26 @@ jobs:
           for E in ${{ matrix.formats }}; do
             for F in build/compose/binaries/main-release/$E/*.$E; do
               [ -e "$F" ] || continue
-              cp "$F" "out/GoMusic-26.11.9-${{ matrix.name }}.$E"
+              cp "$F" "out/GoMusic-26.11.10-${{ matrix.name }}.$E"
             done
           done
           ls -lh out/
+
+      # Linux 的 deb 必须真的是 arm64：x64 runner 误出包时这里直接判失败。
+      - name: 校验 deb 架构
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -eu
+          for F in out/*.deb; do
+            [ -e "$F" ] || continue
+            A=$(dpkg-deb -f "$F" Architecture)
+            echo "$F -> Architecture: $A"
+            case "${{ matrix.name }}" in
+              linux-arm64) [ "$A" = "arm64" ] || { echo "::error::期望 arm64，实际 $A"; exit 1; } ;;
+              linux-x64)   [ "$A" = "amd64" ] || { echo "::error::期望 amd64，实际 $A"; exit 1; } ;;
+            esac
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -149,7 +181,7 @@ jobs:
           git commit -m "ci: desktop logs ${{ github.run_id }}" || echo "no change"
           git push -f origin "$BR" || true
 
-  # 汇总到一次 release，避免四个 runner 并发创建同一个 tag 互相覆盖。
+  # 汇总到一次 release，避免多个 runner 并发创建同一个 tag 互相覆盖。
   release:
     needs: build
     if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/desktop-v') }}
@@ -173,6 +205,6 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --title "GoMusic 桌面版 $TAG" \
-              --notes "仅横屏的 Compose 桌面版，直接提供各平台原生安装包（exe / msi / dmg / deb），内置 JRE，双击安装即可。"
+              --notes "仅横屏的 Compose 桌面版，直接提供各平台原生安装包（exe / msi / dmg / deb），内置 JRE。新增 linux-arm64 原生包与 windows-arm64 兼容包：Linux ARM64 为原生 aarch64；Windows ARM64 因上游 JavaCV(FFmpeg)/JogAmp(JOAL) 无 Windows ARM64 原生解码库，使用 x64 仿真 JRE，功能与 x64 版完全一致。"
           fi
           gh release upload "$TAG" out/* --clobber

@@ -3,7 +3,7 @@
 采用 `年.月.该月版本`（如 `26.11.0`）：前两段为发布年月，第三段为当月第几个版本，
 每月从 `0` 重新起头。手机端与桌面端同规则，但**各自独立计数**。
 
-桌面端当前版本 `26.11.9`，对齐手机端 `26.11.7` 的完整源码，仅保留横屏。
+桌面端当前版本 `26.11.10`，对齐手机端 `26.11.7` 的完整源码，仅保留横屏。
 
 ## 递增规则
 
@@ -83,3 +83,9 @@
   - CI 不再用 `find -maxdepth` / `python3` 打包（macOS / Windows 上会失败），
     改为 Gradle 原生 package 任务 + 单文件安装包直传 Release
   - 补 jpackage 平台依赖：Linux `fakeroot`、Windows WiX v3
+- `26.11.10` 小迭代：补齐 ARM64 平台包
+  - 新增 `linux-arm64`（`ubuntu-24.04-arm` + 原生 aarch64 JDK / FFmpeg / JOAL）与
+    `windows-arm64`（`windows-11-arm`）两个 runner，CI 从 4 个 job 扩到 6 个
+  - Linux deb 在 CI 里用 `dpkg-deb -f` 断言 `Architecture` 为 `arm64` / `amd64`
+  - Windows ARM64 因上游无 windows-arm64 原生解码库，用 x64 仿真 JRE 出兼容包，功能与 x64 版一致
+  - Release 共 8 个单文件安装包，仍不提供 zip

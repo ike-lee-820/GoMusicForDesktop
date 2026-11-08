@@ -19,7 +19,7 @@ object R {
 }
 
 object BuildConfig {
-    const val VERSION_NAME = "26.11.9"
+    const val VERSION_NAME = "26.11.10"
     val OR_KEY: String get() = System.getenv("OPENROUTER_API_KEY") ?: ""
     const val DEBUG = false
 }

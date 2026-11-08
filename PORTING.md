@@ -1,7 +1,7 @@
 # GoMusic 桌面版移植对照与验收
 
 基准：手机端 `GoMusicForAndroid` `main` @ `26.11.7`
-产物：桌面版 `GoMusicForDesktop` `26.11.9`（Compose Desktop / JVM）
+产物：桌面版 `GoMusicForDesktop` `26.11.10`（Compose Desktop / JVM）
 
 ## 一、结论
 
@@ -32,7 +32,7 @@ gradle compileKotlin --no-daemon
 | `InstallResultReceiver.kt` | 同名空接收器；更新包下载后交系统安装器打开 | `DesktopPlatform.kt` |
 
 另外 `R` / `BuildConfig` 这两个编译期生成的类也由 `DesktopPlatform.kt` 提供常量，
-`VERSION_NAME = 26.11.9` 与 `build.gradle.kts` 一致。
+`VERSION_NAME = 26.11.10` 与 `build.gradle.kts` 一致。
 
 ## 三、Android API 兼容层
 
@@ -111,7 +111,7 @@ gradle compileKotlin --no-daemon
 3. 若新增了 Android 平台类，在兼容层补同名空壳；若新增了平台服务，在 `DesktopPlatform.kt` 补平替
 4. `gradle compileKotlin` 通过后，按 `年.月.该月版本` 递增 `build.gradle.kts` 的
    `version` / `packageVersion`、`DesktopPlatform.VERSION_NAME` 与 CI 产物名
-5. 推 `desktop-v<版本>` tag 触发四平台出包
+5. 推 `desktop-v<版本>` tag 触发六平台出包
 
 
 ## 八、26.11.9 产物与「部分编译失败」的修复
@@ -127,9 +127,11 @@ gradle compileKotlin --no-daemon
 
 | 平台 | Gradle 任务 | Release 里的文件 |
 | --- | --- | --- |
-| Windows x64 | `packageReleaseExe` / `packageReleaseMsi` | `GoMusic-26.11.9-windows-x64.exe`、`.msi` |
-| macOS arm64 / x64 | `packageReleaseDmg` | `GoMusic-26.11.9-macos-arm64.dmg`、`-macos-x64.dmg` |
-| Linux x64 | `packageReleaseDeb` | `GoMusic-26.11.9-linux-x64.deb` |
+| Windows x64 | `packageReleaseExe` / `packageReleaseMsi` | `GoMusic-26.11.10-windows-x64.exe`、`.msi` |
+| Windows ARM64 | `packageReleaseExe` / `packageReleaseMsi` | `GoMusic-26.11.10-windows-arm64.exe`、`.msi` |
+| macOS arm64 / x64 | `packageReleaseDmg` | `GoMusic-26.11.10-macos-arm64.dmg`、`-macos-x64.dmg` |
+| Linux x64 | `packageReleaseDeb` | `GoMusic-26.11.10-linux-x64.deb` |
+| Linux ARM64 | `packageReleaseDeb` | `GoMusic-26.11.10-linux-arm64.deb` |
 
 打包依赖：Windows exe/msi 需要 WiX v3，Linux deb 需要 `fakeroot`，CI 已显式准备。
 
@@ -144,3 +146,11 @@ gradle compileKotlin --no-daemon
 
 修复后四个 runner 全部 `success`，Release 直接挂 5 个单文件安装包：
 `windows-x64.exe` / `.msi`、`macos-arm64.dmg`、`macos-x64.dmg`、`linux-x64.deb`。
+
+### 26.11.10：补齐 ARM64
+
+新增 `ubuntu-24.04-arm` 与 `windows-11-arm` 两个官方公共 runner，六平台共 8 个安装包。
+Linux ARM64 走 `aarch64` Temurin JDK + `linux-arm64` FFmpeg + `natives-linux-aarch64` JOAL，
+是真正的原生包，CI 用 `dpkg-deb -f` 断言 deb 架构。Windows ARM64 上游 JavaCV(FFmpeg) /
+JogAmp(JOAL) 只有 `windows-x86_64` / `natives-windows-amd64`，没有 windows-arm64 原生库；
+按「最高级平替」用 x64 仿真 JRE 出兼容包，界面与功能零降级，但不是原生 ARM64 机器码。

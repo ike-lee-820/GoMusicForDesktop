@@ -1,4 +1,4 @@
-# GoMusic 桌面版 26.11.9
+# GoMusic 桌面版 26.11.10
 
 **界面与功能跟手机端 GoMusicForAndroid 26.11.7 完全一致**——不是桌面重排版，
 而是把手机端的 Compose 源码逐字搬过来，靠一层 Android API 兼容层在 JVM 上原样编译。
@@ -57,18 +57,26 @@ gradle run
 gradle createReleaseDistributable     # build/compose/binaries/main-release/app/
 ```
 
-CI：`.github/workflows/compose-desktop.yml` 在 `windows-x64 / macos-x64 /
-macos-arm64 / linux-x64` 四个 runner 上编译并用 jpackage **直接产出原生安装包**，
-推送 `desktop-v*` tag 时把单文件安装包传到同一个 Release：
+CI：`.github/workflows/compose-desktop.yml` 在 `windows-x64 / windows-arm64 /
+macos-x64 / macos-arm64 / linux-x64 / linux-arm64` 六个 runner 上编译并用
+jpackage **直接产出原生安装包**，推送 `desktop-v*` tag 时把单文件安装包传到同一个 Release：
 
 | 平台 | 产物（Release 里直接下载） |
 | --- | --- |
-| Windows | `GoMusic-26.11.9-windows-x64.exe` / `.msi` |
-| macOS | `GoMusic-26.11.9-macos-arm64.dmg` / `-macos-x64.dmg` |
-| Linux | `GoMusic-26.11.9-linux-x64.deb` |
+| Windows x64 | `GoMusic-26.11.10-windows-x64.exe` / `.msi` |
+| Windows ARM64 | `GoMusic-26.11.10-windows-arm64.exe` / `.msi` |
+| macOS | `GoMusic-26.11.10-macos-arm64.dmg` / `-macos-x64.dmg` |
+| Linux x64 | `GoMusic-26.11.10-linux-x64.deb` |
+| Linux ARM64 | `GoMusic-26.11.10-linux-arm64.deb` |
 
 **不再提供 zip 压缩包**。安装包内置 JRE，双击安装即可运行。
 jpackage 不支持交叉编译，所以每个平台的包由对应平台的 runner 生成。
+
+**架构说明**：Linux ARM64 是真正的原生 aarch64 包（aarch64 JRE + `linux-arm64`
+FFmpeg + `natives-linux-aarch64` JOAL），CI 里用 `dpkg-deb -f` 断言 deb 架构为
+`arm64`。Windows ARM64 上游 JavaCV(FFmpeg) / JogAmp(JOAL) 不发布
+`windows-arm64` 原生库，因此该包内置 x64 JRE，由 Windows 自带的 x64 仿真运行，
+功能与 x64 版完全一致，但不是原生 ARM64 机器码（详见「最高级平替」）。
 
 `build.yml` 与 `tauri.yml` 是旧流程留档，只在 Actions 手动触发，不随 push 跑、
 不发布 release，避免和主线抢 tag。
